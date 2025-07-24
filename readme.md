@@ -2,6 +2,11 @@
 ## Introduction
 This desktop application, built with customtkinter, provides an interactive chat interface for local Large Language Models (LLMs) served via Ollama. It's designed to be responsive, allowing you to interact with your LLM without the GUI freezing, and it includes features for customizing the LLM's behavior and stopping ongoing generations.
 
+## Update
+24 July'25 
+- fix the window hang issue 
+
+
 ## Features
 * **Customizable LLM Interaction:** Easily chat with your local LLMs.
 

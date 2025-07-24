@@ -1,21 +1,14 @@
 import requests
-from ollama import Client # For interacting with Ollama
-#import json # For parsing Ollama streaming responses
-
-
+from ollama import Client 
 
 def run_llm_inference(prompt, model, temperature, response_queue):
-    """
-    Queries the local LLM via Ollama (streaming response) and sends words
-    to the main process via a queue.
-    """
     try:
         client = Client(host='http://localhost:11434')
         for chunk in client.generate(
             model=model,
             prompt=prompt,
             options={'temperature': temperature},
-            stream=True # This means we get the response token by token
+            stream=True 
         ):
             if 'response' in chunk:
                 token = chunk['response']
