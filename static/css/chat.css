@@ -1,0 +1,10 @@
+/* Chat composer: permission modes and @ file mentions. */
+.chat-modes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin-bottom: 6px; font-size: 11px; color: var(--soft); }
+.chat-mode { display: inline-flex; align-items: center; gap: 5px; min-width: 0; cursor: pointer; user-select: none; }
+.chat-mode input { accent-color: var(--accent); margin: 0; }
+.chat-mode span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.chat-mode.on { color: var(--warn); font-weight: 600; }
+.chat-mode.plan.on { color: var(--accent); }
+.chat-mode.disabled { opacity: .55; cursor: default; }
+.chat-auto { padding: 4px 10px; font-size: 11px; color: var(--warn); }
+.chat-mention { color: var(--accent); }

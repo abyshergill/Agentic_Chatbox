@@ -1,0 +1,6 @@
+# Optional: run .gguf model files directly, without Ollama.
+# Builds llama.cpp from source (a few minutes). On Apple Silicon, use the GPU with:
+#   CMAKE_ARGS="-DGGML_METAL=on" pip install -r requirements-gguf.txt
+# Alternatively install llama.cpp's own server (brew install llama.cpp); the app prefers it when found,
+# because it supports native tool calling.
+llama-cpp-python[server]>=0.3,<0.4

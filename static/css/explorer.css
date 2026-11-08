@@ -1,0 +1,61 @@
+/* File explorer, modelled on VS Code's: rows, indent guides, inline rename, context menu, drag and drop. */
+
+#tree { outline: none; position: relative; }
+#tree:focus-visible { outline: none; }
+
+.ex-row {
+  position: relative; display: flex; align-items: center; gap: 4px; height: 22px; padding-right: 8px;
+  font-size: 12px; color: var(--ink); cursor: pointer; user-select: none; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.ex-row:hover { background: var(--hover); }
+.ex-row.selected { background: var(--accent-wash); }
+/* The keyboard cursor: VS Code draws a focus border on the focused row while the tree has focus. */
+#tree:focus .ex-row.focused { border-color: var(--accent); }
+.ex-row.cut { opacity: .5; }
+.ex-row.drop-target, .ex-row.drop-inside { background: var(--accent-wash); outline: 1px dashed var(--accent); outline-offset: -1px; }
+.ex-row .ex-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.ex-row .ex-twisty { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--soft); }
+.ex-row .ex-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); opacity: 0; transition: opacity .1s; }
+#pane-files:hover .ex-guide, #tree:focus-within .ex-guide { opacity: 1; }
+.ex-row .ex-actions { display: none; gap: 2px; flex: none; }
+.ex-row:hover .ex-actions, .ex-row.focused .ex-actions { display: inline-flex; }
+
+/* Inline name box for new files, new folders and rename. */
+.ex-input {
+  min-width: 0; flex: 1; height: 18px; padding: 0 4px; font: inherit; color: var(--ink);
+  background: var(--raised); border: 1px solid var(--accent); border-radius: 2px; outline: none;
+}
+.ex-input.invalid { border-color: var(--bad); }
+.ex-error {
+  position: absolute; left: var(--ex-indent, 24px); right: 8px; top: 21px; z-index: 5; padding: 3px 6px; font-size: 11px;
+  color: var(--ink); background: var(--bad-wash); border: 1px solid var(--bad); border-radius: 2px; white-space: normal;
+}
+
+/* Right-click menu. */
+.ex-menu {
+  position: fixed; z-index: 60; min-width: 220px; padding: 4px; font-size: 12px; color: var(--ink);
+  background: var(--raised); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+}
+.ex-menu button {
+  display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 24px; height: 24px; padding: 0 10px;
+  border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.ex-menu button:hover, .ex-menu button:focus { background: var(--accent); color: var(--accent-ink); outline: none; }
+.ex-menu button:disabled { opacity: .45; cursor: default; background: none; color: inherit; }
+.ex-menu .ex-key { color: var(--faint); font-size: 11px; }
+.ex-menu button:hover .ex-key, .ex-menu button:focus .ex-key { color: inherit; opacity: .8; }
+.ex-menu hr { height: 1px; margin: 4px 6px; border: 0; background: var(--line); }
+
+/* Confirmation dialog for delete. */
+.ex-dialog {
+  width: min(420px, calc(100vw - 32px)); padding: 18px 18px 14px; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.ex-dialog::backdrop { background: rgba(0, 0, 0, .45); }
+.ex-dialog h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.ex-dialog p { margin: 0 0 14px; font-size: 12px; color: var(--soft); word-break: break-word; }
+.ex-dialog .ex-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.ex-dialog button { height: 28px; padding: 0 12px; font: inherit; font-size: 12px; border-radius: 4px; cursor: pointer; border: 1px solid var(--line); background: var(--raised); color: var(--ink); }
+.ex-dialog button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.ex-dialog button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }

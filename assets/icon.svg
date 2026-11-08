@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#14171b"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="none" stroke="#2d333b" stroke-width="8"/>
+  <!-- A chat bubble holding a small bar chart: a local assistant for files and data. -->
+  <path d="M300 300 h424 a60 60 0 0 1 60 60 v260 a60 60 0 0 1 -60 60 h-250 l-110 90 v-90 h-64 a60 60 0 0 1 -60 -60 v-260 a60 60 0 0 1 60 -60 z" fill="#0072B2"/>
+  <rect x="370" y="500" width="64" height="100" rx="12" fill="#ffffff"/>
+  <rect x="480" y="420" width="64" height="180" rx="12" fill="#ffffff"/>
+  <rect x="590" y="380" width="64" height="220" rx="12" fill="#E69F00"/>
+</svg>

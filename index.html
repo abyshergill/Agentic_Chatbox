@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local AI Workspace</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/explorer.css">
+  <link rel="stylesheet" href="/static/css/models.css">
+  <link rel="stylesheet" href="/static/css/chat.css">
+</head>
+<body class="flex h-full flex-col font-sans">
+  <header class="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-panel px-3">
+    <div class="flex items-center gap-2 font-semibold">
+      <span class="flex h-5 w-5 items-center justify-center rounded bg-accent font-mono text-2xs font-bold text-accent-ink" aria-hidden="true">›_</span>
+      <span id="app-name" class="whitespace-nowrap">Local AI Workspace</span>
+    </div>
+    <span id="ollama-pill" class="pill" title="Ollama connection"><span class="spinner"></span> Checking Ollama</span>
+    <span id="isolation-pill" class="pill hidden sm:inline-flex"></span>
+    <div class="ml-auto flex items-center gap-1">
+      <span id="warning-btn-slot"></span>
+      <button id="open-models" class="text-btn" title="Models: Ollama, .gguf files, and API providers">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5"/><path d="M6 1.5V4M10 1.5V4M6 12v2.5M10 12v2.5M1.5 6H4M1.5 10H4M12 6h2.5M12 10h2.5"/></svg>
+        <span class="hidden sm:inline">Models</span>
+      </button>
+      <button id="open-permissions" class="text-btn" title="Agents, skills, and permissions">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 1.5 2.5 4v4c0 3.3 2.3 5.6 5.5 6.5 3.2-.9 5.5-3.2 5.5-6.5V4L8 1.5Z"/></svg>
+        <span class="hidden sm:inline">Permissions</span>
+      </button>
+      <button id="toggle-theme" class="icon-btn" aria-label="Switch color theme" title="Switch color theme">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 12.5v-11a5.5 5.5 0 0 1 0 11Z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="panes" class="flex min-h-0 flex-1">
+    <!-- Explorer -->
+    <aside id="pane-files" class="pane flex w-64 shrink-0 flex-col border-r border-line bg-panel" aria-label="File explorer">
+      <div class="flex h-9 shrink-0 items-center justify-between pl-3 pr-1.5">
+        <span class="eyebrow">Explorer</span>
+        <span class="flex items-center">
+          <button id="new-file" class="icon-btn h-6 w-6" aria-label="New file" title="New File… (in the selected folder)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M9.5 1.5h-6v13h5M9.5 1.5l3 3v4M9.5 1.5v3h3M12 10.5v4M10 12.5h4"/></svg>
+          </button>
+          <button id="new-folder" class="icon-btn h-6 w-6" aria-label="New folder" title="New Folder… (in the selected folder)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 4.5v8h7M1.5 4.5V3h5l1.5 1.5h6.5v4M12 9.5v5M9.5 12h5"/></svg>
+          </button>
+          <button id="refresh-tree" class="icon-btn h-6 w-6" aria-label="Refresh explorer" title="Refresh Explorer">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.5v3h-3"/></svg>
+          </button>
+          <button id="collapse-tree" class="icon-btn h-6 w-6" aria-label="Collapse folders" title="Collapse Folders in Explorer">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 2.5h9v9h-9zM5 7h4M13.5 4.5v9h-9"/></svg>
+          </button>
+        </span>
+      </div>
+      <input id="data-input" type="file" multiple class="hidden">
+      <div class="px-2 pb-2">
+        <input id="file-search" type="search" placeholder="Search files" aria-label="Search files" class="field h-7 w-full px-2 text-xs">
+      </div>
+      <div id="tree" class="min-h-0 flex-1 overflow-auto pb-2" role="tree" tabindex="0" aria-label="Files" aria-multiselectable="true" data-drop-hint="Drop files here"></div>
+      <div id="active-project" class="truncate border-t border-line px-3 py-1.5 font-mono text-2xs text-soft" title="The project the assistant works in: the top folder of what you selected or opened"></div>
+    </aside>
+    <div class="splitter" data-pane="pane-files" data-edge="right"></div>
+
+    <!-- Editor -->
+    <section id="pane-editor" class="pane flex min-w-0 flex-1 flex-col" aria-label="Code editor">
+      <div id="tabs" class="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-line bg-panel" role="tablist"></div>
+      <div id="editor-area" class="relative min-h-0 flex-1 bg-raised">
+        <div id="editor-host" class="absolute inset-0 hidden"></div>
+        <div id="diff-host" class="absolute inset-0 hidden"></div>
+        <div id="preview-host" class="absolute inset-0 z-10 hidden flex-col bg-raised">
+          <div class="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-panel px-2 text-2xs text-soft">
+            <span class="eyebrow">Dashboard</span>
+            <span id="preview-path" class="min-w-0 truncate font-mono"></span>
+            <a id="preview-external" class="text-btn ml-auto h-6" target="_blank" rel="noopener">Open in new tab</a>
+            <button id="preview-close" class="text-btn h-6">Close</button>
+          </div>
+          <iframe id="preview-frame" title="Dashboard preview" sandbox="" class="min-h-0 w-full flex-1 border-0 bg-white"></iframe>
+        </div>
+        <textarea id="editor-fallback" class="absolute inset-0 hidden resize-none bg-raised p-3 font-mono text-xs text-ink focus:outline-none" spellcheck="false" aria-label="File contents"></textarea>
+        <div id="editor-empty" class="absolute inset-0 flex items-center justify-center p-6 text-center">
+          <div class="max-w-xs">
+            <p class="font-medium">No file open</p>
+            <p class="mt-1 text-xs text-soft">Pick a file in the explorer. Files the assistant changes refresh here automatically.</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex h-7 shrink-0 items-center gap-2 border-t border-line bg-panel px-2 text-2xs text-soft">
+        <span id="editor-path" class="min-w-0 truncate font-mono"></span>
+        <span id="editor-state" class="whitespace-nowrap"></span>
+        <div class="ml-auto flex items-center gap-1">
+          <button id="preview-open" class="text-btn hidden h-5" title="Preview this HTML file as a dashboard">Preview</button>
+          <button id="diff-close" class="text-btn hidden h-5">Close diff</button>
+          <button id="save-file" class="text-btn h-5" disabled title="Save (⌘S)">Save</button>
+        </div>
+      </div>
+      <div class="splitter-h" id="activity-splitter"></div>
+      <div id="activity" class="flex h-44 shrink-0 flex-col border-t border-line bg-panel" aria-label="Activity">
+        <div class="flex h-8 shrink-0 items-center gap-1 px-2">
+          <button id="activity-live" class="text-btn h-6 text-ink" aria-pressed="true">Live log</button>
+          <button id="activity-history" class="text-btn h-6" aria-pressed="false">Audit history</button>
+          <button id="activity-collapse" class="icon-btn ml-auto h-6 w-6" aria-label="Hide or show activity panel" title="Hide or show activity panel">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m3 6 5 5 5-5"/></svg>
+          </button>
+        </div>
+        <div id="activity-body" class="min-h-0 flex-1 overflow-auto px-3 pb-2 font-mono text-2xs leading-5"></div>
+      </div>
+    </section>
+    <div class="splitter" data-pane="pane-chat" data-edge="left"></div>
+
+    <!-- Chat -->
+    <section id="pane-chat" class="pane pane-active flex w-[420px] shrink-0 flex-col border-l border-line bg-panel" aria-label="AI chat">
+      <div class="shrink-0 border-b border-line px-3 py-2">
+        <div class="flex items-center gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-1.5">
+              <span id="chat-skill" class="truncate text-sm font-semibold">Automatic</span>
+              <span id="chat-command" class="truncate rounded bg-accent-wash px-1.5 font-mono text-2xs text-accent"></span>
+              <button id="clear-skill" class="hidden text-2xs text-soft underline hover:text-ink">clear</button>
+            </div>
+            <div id="chat-agent" class="truncate text-2xs text-soft">Picks a skill from each message</div>
+          </div>
+          <button id="new-chat" class="text-btn" title="Start a new conversation">New chat</button>
+        </div>
+        <label class="mt-1.5 flex items-center gap-2 text-2xs text-soft">
+          <span>Model</span>
+          <select id="model-select" class="field h-6 min-w-0 flex-1 px-1 font-mono text-2xs"></select>
+        </label>
+      </div>
+      <div id="messages" class="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" aria-live="polite"></div>
+      <div class="relative shrink-0 border-t border-line p-2">
+        <div id="palette" class="absolute bottom-full left-2 right-2 mb-1 hidden max-h-64 overflow-y-auto rounded border border-line bg-raised py-1 shadow-lg" role="listbox"></div>
+        <div class="chat-modes">
+          <label id="auto-approve-wrap" class="chat-mode" title="Actions whose files are all inside this project run without asking: edits, new files, renames, moves to Trash, data outputs, and commands (sandboxed to this folder). Anything outside it still asks. Disabled applications stay disabled.">
+            <input id="auto-approve" type="checkbox"><span id="auto-approve-label">Allow all actions in project</span>
+          </label>
+          <label id="plan-mode-wrap" class="chat-mode plan" title="The assistant only looks (reads files and data) and replies with a plan. Nothing is changed. Turn it off to carry the plan out.">
+            <input id="plan-mode" type="checkbox"><span>Plan mode</span>
+          </label>
+        </div>
+        <div id="composer-chips" class="mb-1.5 flex flex-wrap gap-1 empty:hidden"></div>
+        <div class="field flex flex-col focus-within:border-accent">
+          <textarea id="chat-input" rows="2" class="max-h-48 w-full resize-none bg-transparent px-2.5 py-2 text-sm focus:outline-none" placeholder="Ask anything. Type / for skills, # for applications, @ to add a file" aria-label="Message"></textarea>
+          <div class="flex items-center gap-1 px-1 pb-1">
+            <button id="attach" class="icon-btn" aria-label="Attach files" title="Attach files">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m13.5 7.5-5.6 5.6a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-5.9 5.9a1 1 0 0 1-1.5-1.5l5.3-5.3"/></svg>
+            </button>
+            <input id="file-input" type="file" multiple class="hidden">
+            <span class="ml-1 hidden text-2xs text-faint sm:inline">Enter to send, Shift+Enter for a new line</span>
+            <button id="stop" class="ml-auto hidden h-7 items-center rounded border border-bad px-3 text-xs font-medium text-bad hover:bg-bad-wash">Stop</button>
+            <button id="send" class="ml-auto h-7 rounded bg-accent px-3 text-xs font-semibold text-accent-ink hover:opacity-90 disabled:opacity-40">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="mobile-only flex h-11 shrink-0 border-t border-line bg-panel" aria-label="Panes">
+    <button data-show="pane-files" class="flex-1 text-xs text-soft">Files</button>
+    <button data-show="pane-editor" class="flex-1 text-xs text-soft">Editor</button>
+    <button data-show="pane-chat" class="flex-1 text-xs font-semibold text-ink">Chat</button>
+  </nav>
+
+  <dialog id="permissions-dialog" class="m-auto w-[min(760px,calc(100vw-32px))] rounded-lg border border-line bg-panel p-0 text-ink backdrop:bg-black/50">
+    <div class="flex items-center justify-between border-b border-line px-4 py-3">
+      <h2 class="font-semibold">Permissions and skills</h2>
+      <button id="close-permissions" class="icon-btn" aria-label="Close">✕</button>
+    </div>
+    <div id="permissions-body" class="max-h-[70vh] space-y-5 overflow-y-auto p-4"></div>
+  </dialog>
+
+  <dialog id="models-dialog" class="m-auto w-[min(760px,calc(100vw-32px))] rounded-lg border border-line bg-panel p-0 text-ink backdrop:bg-black/50" aria-labelledby="models-title">
+    <div class="flex items-center justify-between border-b border-line px-4 py-3">
+      <h2 id="models-title" class="font-semibold">Models</h2>
+      <button id="close-models" class="icon-btn" aria-label="Close">✕</button>
+    </div>
+    <div id="models-body" class="max-h-[75vh] overflow-y-auto p-4"></div>
+  </dialog>
+
+  <script src="/static/vendor/monaco/vs/loader.js"></script>
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
