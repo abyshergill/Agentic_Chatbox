@@ -1,4 +1,4 @@
-# Local AI Workspace
+# Agentic Chatbox V2.1
 
 A local AI agent workspace: chat with a model, and it reads and edits your files, runs tests and programs, and opens
 applications for you, within permissions you set. Models run on your machine through [Ollama](https://ollama.com) or
