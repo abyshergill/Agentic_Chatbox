@@ -40,7 +40,7 @@ async def list_directory(ctx: ToolContext, args: dict) -> ToolResult:
 
 def _find_attachment(ctx: ToolContext, reference: str):
     """Matches an id or file name. Models often pass the name they were shown."""
-    attachments = ctx.session.attachments
+    attachments = getattr(ctx.session, "attachments", None) or {}
     if reference in attachments:
         return attachments[reference]
     name = Path(reference).name

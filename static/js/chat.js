@@ -1,8 +1,9 @@
 // Right pane: conversation, streaming events, tool cards, approvals, command palette.
-import { $, api, el, emit, on, qs, session, store } from "./util.js";
+import { $, api, el, emit, newSessionId, on, qs, session, setSessionId, store } from "./util.js";
 import { renderMarkdown } from "./markdown.js";
 import { activeFile, currentSelection, showDiff } from "./editor.js";
 import { getActiveProject } from "./tree.js";
+import { chooseSaveFolder } from "./folders.js";
 
 const STATUS = {
   success: ["Done", "text-good"], failed: ["Failed", "text-bad"], denied: ["Denied", "text-bad"],
@@ -482,7 +483,7 @@ function renderChips() {
     ...(askedFile ? [chip(`asking about: ${askedFile.split("/").pop()}`, `Your questions are about ${askedFile}`, () => { askedFile = null; renderChips(); })] : []),
     ...(!askedFile && file && includeFile ? [chip(`open: ${file.split("/").pop()}`, `The assistant can see ${file}`, () => { includeFile = false; renderChips(); })] : []),
     ...[...mentions].map((path) => chip(`@${path.split("/").pop()}`, `The assistant will read ${path}`, () => { mentions.delete(path); renderChips(); })),
-    ...attachments.map((a) => chip(a.name, `${a.size} bytes`, async () => {
+    ...attachments.map((a) => chip(a.name, a.saved_to ? `${a.size} bytes · saved to ${a.saved_to}` : `${a.size} bytes · attached only`, async () => {
       await api(`/api/files/upload/${a.id}?session_id=${session.id}`, { method: "DELETE" }).catch(() => {});
       attachments = attachments.filter((item) => item.id !== a.id);
       renderChips();
@@ -490,18 +491,35 @@ function renderChips() {
   );
 }
 
+// Attached files are also copied into the selected folder, so the assistant's tools can work on them and save
+// what they generate beside them. With no folder selected, the user is asked where to save.
 async function upload(files) {
+  if (!files.length) return;
+  let target = getActiveProject();
+  if (!target) {
+    target = await chooseSaveFolder(files.map((file) => file.name));
+    if (target === null) return; // Cancelled.
+    if (target && target !== getActiveProject()) emit("use-folder", target);
+  }
+  let saved = 0;
   for (const file of files) {
     const form = new FormData();
     form.append("session_id", session.id);
     form.append("file", file);
+    if (target) form.append("target_dir", target);
     try {
-      attachments.push(await api("/api/files/upload", { method: "POST", body: form }));
+      const result = await api("/api/files/upload", { method: "POST", body: form });
+      attachments.push(result);
+      if (result.saved_to) saved += 1;
       renderChips();
     } catch (error) {
       $("empty-chat")?.remove();
       notice("bad", `${file.name}: ${error.message}`);
     }
+  }
+  if (saved) {
+    emit("files-changed");
+    emit("log", { time: new Date().toTimeString().slice(0, 8), message: `Saved ${saved} attached file${saved === 1 ? "" : "s"} to ${target}`, level: "info" });
   }
 }
 
@@ -511,6 +529,7 @@ async function restore() {
   const state = await api(`/api/session?session_id=${session.id}`);
   attachments = state.attachments;
   renderChips();
+  $("chat-command").textContent = state.pinned_command || "";
   if (!state.messages.length) return emptyState();
   messages().replaceChildren();
   for (const message of state.messages) {
@@ -554,13 +573,14 @@ export function initChat() {
       send();
     }
   });
-  $("new-chat").addEventListener("click", async () => {
-    await api("/api/session/reset", { json: { session_id: session.id } });
-    attachments = [];
-    renderChips();
-    emptyState();
-    emit("activation", { cleared: true });
-    emit("log-clear");
+  // A new chat gets a new id; the previous one stays in History.
+  $("new-chat").addEventListener("click", () => switchChat(newSessionId()));
+  $("open-history").addEventListener("click", openHistory);
+  $("close-history").addEventListener("click", () => $("history-dialog").close());
+  let searchTimer;
+  $("history-search").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderHistoryList, 150);
   });
   $("clear-skill").addEventListener("click", () => send("/auto"));
   let lastFile = null;
@@ -587,6 +607,8 @@ export function initChat() {
 
 // ---- permission modes -------------------------------------------------------
 
+const AUTO_HELP = "Actions whose files are all inside this project run without asking: edits, new files, renames, moves to Trash, data outputs, and commands (sandboxed to this folder). Anything outside it still asks. Disabled applications stay disabled.";
+
 function initModes() {
   const auto = $("auto-approve");
   const plan = $("plan-mode");
@@ -595,7 +617,9 @@ function initModes() {
   const sync = () => {
     const project = getActiveProject();
     auto.disabled = !project;
-    $("auto-approve-label").textContent = project ? `Allow all actions in ${project}` : "Allow all actions (select a project first)";
+    const name = project && project.startsWith("/") ? project.split("/").pop() : project;
+    $("auto-approve-label").textContent = project ? `Allow all actions in ${name}` : "Allow all actions (select a project first)";
+    $("auto-approve-wrap").title = project ? `${project}\n\n${AUTO_HELP}` : AUTO_HELP;
     $("auto-approve-wrap").classList.toggle("on", auto.checked && Boolean(project) && !plan.checked);
     $("auto-approve-wrap").classList.toggle("disabled", !project);
     $("plan-mode-wrap").classList.toggle("on", plan.checked);
@@ -607,4 +631,98 @@ function initModes() {
   plan.addEventListener("change", () => { store.set("workspace.planMode", plan.checked ? "1" : "0"); sync(); });
   on("project-changed", sync);
   sync();
+}
+
+// ---- history (saved in SQLite) ---------------------------------------------------
+
+async function switchChat(id) {
+  if (running) {
+    notice("warn", "A task is still running. Stop it before switching conversations.");
+    return false;
+  }
+  setSessionId(id);
+  askedFile = null;
+  mentions.clear();
+  emit("activation", { cleared: true });
+  emit("log-clear");
+  await restore().catch((error) => notice("bad", error.message));
+  emit("session-changed", id);
+  $("chat-input").focus();
+  return true;
+}
+
+function when(seconds) {
+  const date = new Date(seconds * 1000);
+  const days = Math.floor((Date.now() - date) / 86_400_000);
+  if (days < 1 && new Date().getDate() === date.getDate()) return `Today ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  if (days < 2) return "Yesterday";
+  if (days < 7) return date.toLocaleDateString([], { weekday: "long" });
+  return date.toLocaleDateString();
+}
+
+function historyRow(chat) {
+  const current = chat.id === session.id;
+  const title = el("span", { class: "hs-title", text: chat.title });
+  const open = el("button", {
+    class: `hs-open${current ? " current" : ""}`, title: current ? "This conversation" : "Continue this conversation",
+    onclick: async () => { if (await switchChat(chat.id)) $("history-dialog").close(); },
+  }, title, el("span", { class: "hs-meta", text: `${when(chat.updated)} · ${chat.messages} message${chat.messages === 1 ? "" : "s"}${current ? " · open now" : ""}` }));
+
+  const rename = el("button", { class: "hs-act", title: "Rename", "aria-label": `Rename ${chat.title}`, text: "✎" });
+  rename.addEventListener("click", () => {
+    const field = el("input", { class: "field hs-edit", value: chat.title, "aria-label": "Conversation name" });
+    const save = async () => {
+      const value = field.value.trim();
+      if (value && value !== chat.title) {
+        try { await api(`/api/chats/${chat.id}/rename`, { json: { title: value } }); } catch (error) { notice("bad", error.message); }
+      }
+      renderHistoryList();
+    };
+    field.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") { event.preventDefault(); save(); }
+      if (event.key === "Escape") { event.preventDefault(); renderHistoryList(); }
+    });
+    field.addEventListener("blur", save);
+    open.replaceWith(field);
+    field.focus();
+    field.select();
+  });
+
+  // Two clicks to delete: the first arms the button, so a slip of the mouse does not lose a conversation.
+  const remove = el("button", { class: "hs-act", title: "Delete", "aria-label": `Delete ${chat.title}`, text: "🗑" });
+  remove.addEventListener("click", async () => {
+    if (!remove.classList.contains("armed")) {
+      remove.classList.add("armed");
+      remove.textContent = "Delete?";
+      setTimeout(() => { remove.classList.remove("armed"); remove.textContent = "🗑"; }, 3000);
+      return;
+    }
+    try {
+      await api(`/api/chats/${chat.id}`, { method: "DELETE" });
+      if (current) await switchChat(newSessionId());
+      renderHistoryList();
+    } catch (error) {
+      notice("bad", error.message);
+    }
+  });
+  return el("li", { class: "hs-row" }, open, rename, remove);
+}
+
+async function renderHistoryList() {
+  const list = $("history-list");
+  try {
+    const { chats } = await api(`/api/chats?${qs({ q: $("history-search").value.trim() })}`);
+    list.replaceChildren(...(chats.length ? chats.map(historyRow)
+      : [el("li", { class: "hs-empty", text: $("history-search").value ? "No conversations match." : "No saved conversations yet. They appear here after the first reply." })]));
+  } catch (error) {
+    list.replaceChildren(el("li", { class: "hs-empty", text: error.message }));
+  }
+}
+
+async function openHistory() {
+  $("history-search").value = "";
+  $("history-dialog").showModal();
+  await renderHistoryList();
+  $("history-search").focus();
 }

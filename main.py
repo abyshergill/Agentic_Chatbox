@@ -20,7 +20,8 @@ from core.agent import AgentRun, ChatOptions
 from core.app_context import AppContext
 from core.arch_loader import load_registry
 from core.config import PROJECT_ROOT, Settings
-from core.fs_guard import FsGuard, PathDenied, atomic_write, read_text_limited
+from core.fs_guard import FsGuard, PathDenied, atomic_write, is_secret_name, read_text_limited
+from core import dataviz
 from core.documents import DOCUMENT_TYPES, extract_text
 from core.models import PRESETS, mask
 from core.ollama_client import OllamaError
@@ -129,6 +130,15 @@ def copy_name(folder: Path, name: str) -> Path:
     raise HTTPException(409, "Too many copies with this name.")
 
 
+class FolderRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1000)
+    create: bool = False
+
+
+class RenameChatRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
 class WriteRequest(BaseModel):
     session_id: str
     path: str
@@ -179,14 +189,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
 
     def guard_for(session: Session) -> FsGuard:
-        """The file view follows the active skill, falling back to the default skill."""
+        """The file view follows the active skill, falling back to the default skill.
+
+        It also shows every folder the user opened and arch/, so agents and skills can be edited here.
+        """
         registry = load_registry(settings.arch_dir)
         command = session.pinned_command or session.active_command
         skill = registry.skill_for(command) if command else None
         if skill is None or not skill.valid:
             skill = registry.default_skill
         paths = skill.allowed_paths if skill is not None and skill.valid else []
-        return FsGuard(settings, permissions(), paths)
+        return FsGuard(settings, permissions(), paths, include_config=True)
 
     def require_fs(operation: str) -> None:
         decision = permissions().check("filesystem", operation)
@@ -368,12 +381,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # "Allow all actions in this project": must be a real folder inside the workspace that is not a top-level
             # root of the whole workspace, so the checkbox can never mean "everything".
             try:
-                folder = FsGuard(settings, permissions(), ["./workspace"]).resolve(body.auto_approve)
+                auto_guard = FsGuard(settings, permissions(), ["./workspace"])
+                folder = auto_guard.resolve(body.auto_approve)
             except PathDenied as exc:
                 raise HTTPException(403, f"Cannot allow actions there: {exc}") from exc
             if not folder.is_dir() or folder == settings.workspace_root.resolve():
                 raise HTTPException(400, "Choose a project folder to allow actions in.")
-            auto_approve = folder.relative_to(settings.workspace_root.resolve()).as_posix()
+            auto_approve = auto_guard.display(folder)
             audit_ui(session, "ui_auto_approve", auto_approve, "success", "allow all actions in project for this message")
 
         run = AgentRun(
@@ -424,9 +438,98 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "pinned_command": session.pinned_command,
             "active_command": session.active_command,
             "attachments": [
-                {"id": a.id, "name": a.name, "size": a.size} for a in session.attachments.values()
+                {"id": a.id, "name": a.name, "size": a.size, "saved_to": a.saved_to}
+                for a in session.attachments.values()
             ],
         }
+
+    # ---- chat history (SQLite) -------------------------------------------------
+
+    @app.get("/api/chats")
+    async def list_chats(q: str = Query("", max_length=200), limit: int = Query(200, ge=1, le=1000)):
+        return {"chats": ctx.db.list_chats(limit, q.strip()) if ctx.db else []}
+
+    @app.get("/api/chats/{chat_id}")
+    async def get_chat(chat_id: str):
+        session_for(chat_id)  # Validates the id.
+        chat = ctx.db.load_chat(chat_id) if ctx.db else None
+        if chat is None:
+            raise HTTPException(404, "No such conversation.")
+        return chat
+
+    @app.post("/api/chats/{chat_id}/rename")
+    async def rename_chat(chat_id: str, body: RenameChatRequest):
+        session_for(chat_id)
+        title = " ".join(body.title.split())
+        if not title or not ctx.db or not ctx.db.rename_chat(chat_id, title):
+            raise HTTPException(404, "No such conversation.")
+        return {"id": chat_id, "title": title}
+
+    @app.delete("/api/chats/{chat_id}")
+    async def delete_chat(chat_id: str):
+        session = session_for(chat_id)
+        run = ctx.runs.get(chat_id)
+        if run is not None and run.task is not None and not run.task.done():
+            raise HTTPException(409, "This conversation is still running. Stop it first.")
+        for attachment in session.attachments.values():
+            attachment.path.unlink(missing_ok=True)
+        ctx.sessions.forget(chat_id)
+        return {"deleted": True}
+
+    # ---- folders opened in the explorer ------------------------------------------
+
+    def folder_list() -> dict:
+        return {"folders": [{"path": p.as_posix(), "name": p.name, "exists": p.is_dir()} for p in settings.extra_roots]}
+
+    @app.get("/api/folders")
+    async def list_folders():
+        return folder_list()
+
+    @app.post("/api/folders")
+    async def open_folder(body: FolderRequest):
+        """Adds a folder on this computer to the explorer; the assistant may then read and save files there."""
+        require_fs("list")
+        text = body.path.strip()
+        if "\x00" in text:
+            raise HTTPException(400, "Invalid path.")
+        folder = Path(text).expanduser()
+        if not folder.is_absolute():
+            raise HTTPException(400, "Give the full path of the folder, for example /Users/you/Documents/reports.")
+        folder = folder.resolve()
+        if body.create and not folder.exists():
+            try:
+                folder.mkdir(parents=True)
+            except OSError as exc:
+                raise HTTPException(400, f"Could not create that folder: {exc.strerror}") from exc
+        if not folder.is_dir():
+            raise HTTPException(404, "That folder does not exist.")
+        if folder == Path(folder.anchor) or folder == Path.home().resolve():
+            raise HTTPException(400, "That folder is too broad. Choose a more specific folder.")
+        for protected in settings.protected_paths:
+            mark = protected.resolve()
+            if folder == mark or folder.is_relative_to(mark):
+                raise HTTPException(400, "That folder is part of the application and cannot be opened.")
+        if any(is_secret_name(part) for part in folder.parts[1:]):
+            raise HTTPException(400, "That folder looks like it holds secrets and cannot be opened.")
+        if folder not in settings.extra_roots:
+            if ctx.db is not None:
+                ctx.db.add_folder(folder)
+            settings.extra_roots.append(folder)
+        ctx.audit.record(session_id="-", agent="user", skill="-", model="-", operation="ui_open_folder",
+                         target=str(folder), permission="allowed", approval="user_action", status="success",
+                         result="added to explorer")
+        return {**folder_list(), "path": folder.as_posix()}
+
+    @app.post("/api/folders/remove")
+    async def close_folder(body: FolderRequest):
+        """Removes a folder from the explorer. Nothing on disk is touched."""
+        folder = Path(body.path.strip()).expanduser().resolve()
+        if folder not in settings.extra_roots:
+            raise HTTPException(404, "That folder is not open.")
+        if ctx.db is not None:
+            ctx.db.remove_folder(folder)
+        settings.extra_roots.remove(folder)
+        return folder_list()
 
     @app.post("/api/session/reset")
     async def reset_session(body: SessionRequest):
@@ -471,10 +574,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         if not path:
             roots = [p for p in directories if p.is_dir()]
-            return {
-                "roots": guard.root_labels(),
-                "entries": [{"name": guard.display(p), "path": guard.display(p), "type": "dir"} for p in roots],
-            }
+            # Your own folders first, then the workspace, then arch/ (agents and skills) last.
+            order = {"folder": 0, "workspace": 1, "config": 2}
+            roots.sort(key=lambda p: order[guard.root_kind(p)])
+            entries = []
+            for root in roots:
+                kind = guard.root_kind(root)
+                name = guard.display(root) if kind == "workspace" else root.name
+                if kind == "config":
+                    name = "arch · agents & skills"
+                entries.append({"name": name, "path": guard.display(root), "type": "dir", "root": kind,
+                                "title": str(root)})
+            return {"roots": guard.root_labels(), "entries": entries}
         if not directories[0].is_dir():
             raise HTTPException(404, "Not a directory.")
         entries = []
@@ -575,7 +686,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     raise UploadRejected("the target folder does not exist")
                 destination = guard.resolve(str(folder / name))
                 if destination.exists():
-                    raise UploadRejected(f"'{guard.display(destination)}' already exists")
+                    if not attach:
+                        raise UploadRejected(f"'{guard.display(destination)}' already exists")
+                    destination = guard.resolve(str(copy_name(folder, name)))  # Saved as "name copy.ext".
 
             head = await file.read(CHUNK)
             kind = validate_content(name, head)
@@ -601,11 +714,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             audit_ui(session, "upload", file.filename or "(unnamed)", "denied", str(exc))
             raise HTTPException(403, str(exc)) from exc
 
-        attachment = Attachment(id=attachment_id, name=name, path=stored, size=size, kind=kind)
         saved_to = None
         if destination is not None:
             destination.write_bytes(stored.read_bytes())
             saved_to = guard_for(session).display(destination)
+        attachment = Attachment(id=attachment_id, name=name, path=stored, size=size, kind=kind, saved_to=saved_to)
         if not attach and destination is not None:
             stored.unlink(missing_ok=True)  # Saved to the project only; not offered to the chat.
             audit_ui(session, "upload", saved_to, "success", f"{size} bytes")
@@ -625,7 +738,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ---- projects and dashboards ----------------------------------------------
 
-    DATA_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl"}
+    DATA_SUFFIXES = dataviz.SUPPORTED - {".txt", ".dat"}
 
     @app.get("/api/projects")
     async def list_projects(session_id: str = Query(...)):
@@ -675,8 +788,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session = session_for(body.session_id)
         require_fs("create")
         guard = guard_for(session)
-        parts = [p for p in body.path.replace("\\", "/").split("/") if p]
-        if any(not re.fullmatch(r"[A-Za-z0-9_][\w .-]{0,80}", p) or p in {".", ".."} for p in parts):
+        if any(p in {".", ".."} for p in body.path.replace("\\", "/").split("/")):
             raise HTTPException(400, "Folder names may use letters, numbers, spaces, dots, dashes and underscores.")
         try:
             folder = guard.resolve(body.path)
@@ -684,6 +796,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except PathDenied as exc:
             audit_ui(session, "ui_mkdir", body.path, "denied", str(exc))
             raise HTTPException(403, str(exc)) from exc
+        # Only the folders being created are checked; existing parents may have any name.
+        new_parts, probe = [], folder
+        while not probe.exists() and probe != probe.parent:
+            new_parts.append(probe.name)
+            probe = probe.parent
+        if any(not re.fullmatch(r"[A-Za-z0-9_][\w .()-]{0,80}", p) for p in new_parts):
+            raise HTTPException(400, "Folder names may use letters, numbers, spaces, dots, dashes and underscores.")
         if folder.exists() and not folder.is_dir():
             raise HTTPException(409, "A file with that name already exists.")
         existed = folder.is_dir()

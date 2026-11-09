@@ -13,6 +13,12 @@ Fields
 The terminal also supports
   Extra Paths:     folders of tools outside the system PATH, such as ~/.cargo/bin
 
+The web scraper also supports
+  Allowed Domains: the only sites it may contact; a domain also allows its subdomains
+  Render Browser:  chrome | edge, used by render_page and screenshot
+  Respect Robots:  yes | no (anything else counts as yes)
+  Max Pages Per Request, Max Requests Per Minute, Timeout Seconds, Max Size MB: limits
+
 ## Development Applications
 
 #vscode
@@ -53,6 +59,35 @@ Access: disabled
 Operations: open_url
 Approval: required
 
+#chrome
+Name: Google Chrome
+Executable: chrome
+Access: disabled
+Operations: open_url
+Approval: required
+
+#edge
+Name: Microsoft Edge
+Executable: msedge
+Access: disabled
+Operations: open_url
+Approval: required
+
+## Web Access
+
+#web
+Name: Web Scraper
+Access: disabled
+Operations: fetch_page, render_page, extract, screenshot, crawl
+Approval: required
+Allowed Domains: localhost, 127.0.0.1
+Render Browser: chrome
+Respect Robots: yes
+Max Pages Per Request: 50
+Max Requests Per Minute: 20
+Timeout Seconds: 30
+Max Size MB: 10
+
 ## Data Analysis
 
 #data
@@ -77,7 +112,7 @@ Name: File Uploads
 Access: enabled
 Operations: upload
 Approval: not_required
-Extensions: py, js, ts, md, txt, json, jsonl, csv, tsv, pdf, html, css, yaml, yml, toml, rs, c, h, cpp, sql, log, xlsx, docx, doc, rtf, odt, htm
+Extensions: csv, tsv, tab, psv, dat, txt, json, jsonl, ndjson, xml, yaml, yml, toml, ini, cfg, conf, log, md, rst, html, htm, css, scss, svg, xlsx, xlsm, xls, ods, parquet, pdf, docx, doc, rtf, odt, pptx, odp, ipynb, py, js, jsx, ts, tsx, vue, java, kt, go, rs, c, h, cpp, hpp, cs, swift, php, rb, sql, r
 Max Size MB: 25
 
 ## Documents

@@ -6,6 +6,7 @@
 // F2 renames, Space or Cmd+Down opens, Cmd+Backspace or Delete moves to Trash, Cmd+C/X/V copy, cut and paste.
 import { $, api, el, emit, on, qs, session, store } from "./util.js";
 import { absolutePath, isDesktop, openNative, opensNatively, revealNative } from "./desktop.js";
+import { closeFolder, openFolder } from "./folders.js";
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 const KEYS = isMac
@@ -156,11 +157,13 @@ function rowNode(entry, depth, index) {
   const node = el("div", {
     id: `ex-row-${index}`, class: classes.join(" "), role: "treeitem", "aria-level": String(depth + 1),
     "aria-selected": String(selection.has(path)), "aria-expanded": isDir ? String(expanded.has(path)) : null,
-    "data-path": path, "data-type": entry.type, draggable: "true", title: path,
+    "data-path": path, "data-type": entry.type, draggable: "true", title: entry.title || path,
+    "data-root": entry.root || null,
     style: `padding-left:${8 + depth * INDENT}px`,
   }, guides(depth), el("span", { class: "ex-twisty" }, isDir ? chevron(expanded.has(path)) : null));
   if (!isDir) node.append(fileIcon(entry.name));
   node.append(el("span", { class: "ex-name", text: entry.name }));
+  if (entry.root === "folder") node.append(el("span", { class: "ex-badge", title: "A folder you opened", text: "opened" }));
   if (!isDir) {
     node.append(el("span", { class: "ex-actions" },
       opensNatively(path) ? el("button", { class: "ask-btn", "data-action": "native", title: "Open in its default app", text: "Open" }) : null,
@@ -268,7 +271,8 @@ function selectedFolderChanged(folder) {
 export function projectOf(path) {
   if (!path) return null;
   const top = topEntries.find((entry) => isUnder(path, entry.path));
-  if (!top) return null;
+  // arch/ holds agents and skills: you can edit them, but it is never where the assistant saves its work.
+  if (!top || top.root === "config") return null;
   const rest = path.slice(top.path.length + 1);
   if (!rest) return top.path;
   const first = `${top.path}/${rest.split("/")[0]}`;
@@ -343,6 +347,28 @@ async function revealPath(path) {
   focused = anchor = path;
   render();
   scrollToFocused();
+}
+
+// ---- folders you opened -------------------------------------------------------
+
+// Makes a folder the active project: the assistant works in it and saves generated files there.
+async function useAsOutput(path, quiet = false) {
+  const changed = path !== activeProject;
+  setActiveProject(path);
+  lastRevealed = null;
+  await revealPath(path);
+  if (changed && !quiet) notify("info", `Generated files will be saved in ${path}`);
+}
+
+async function removeOpened(path) {
+  const ok = await dialog({ title: `Remove '${baseName(path)}' from the explorer?`, detail: "Nothing on disk is deleted. You can open it again with Open Folder.", confirm: "Remove" });
+  if (!ok) return;
+  try {
+    await closeFolder(path);
+    if (activeProject && isUnder(activeProject, path)) setActiveProject(null);
+  } catch (error) {
+    notify("bad", error.message);
+  }
 }
 
 // ---- creating, renaming and the inline name box -------------------------------
@@ -607,6 +633,7 @@ function menuItems(path) {
   if (!entry) {
     return [
       ["New File…", "", () => startCreate("file", null)], ["New Folder…", "", () => startCreate("folder", null)],
+      ["Open Folder…", "", openFolder],
       ["Upload Files…", "", () => uploadInto(folderFor(null))], "-",
       pasteItem, "-",
       ["Refresh", "", refreshTree], ["Collapse Folders", "", collapseAll],
@@ -627,7 +654,9 @@ function menuItems(path) {
     return [
       ["New File…", "", () => startCreate("file", path)], ["New Folder…", "", () => startCreate("folder", path)],
       ["Upload Files…", "", () => uploadInto(path)],
+      ...(projectOf(path) ? [["Save Generated Files Here", "", () => useAsOutput(path)]] : []),
       ...(desktop ? [["Reveal in Finder", "", () => revealNative(path)]] : []),
+      ...(isTop && entry.root === "folder" ? ["-", ["Remove Folder from Explorer", "", () => removeOpened(path)]] : []),
       ...common,
     ];
   }
@@ -930,6 +959,14 @@ export function initTree() {
   window.addEventListener("blur", closeMenu);
   window.addEventListener("resize", closeMenu);
 
+  $("open-folder").addEventListener("click", openFolder);
+  on("folders-changed", async (path) => {
+    if (path) expanded.add(path);
+    saveExpanded();
+    await reloadAll();
+    if (path) await useAsOutput(path, true); // Opening the folder already said so.
+  });
+  on("use-folder", (path) => useAsOutput(path));
   $("new-file").addEventListener("click", () => startCreate("file"));
   $("new-folder").addEventListener("click", () => startCreate("folder"));
   $("collapse-tree").addEventListener("click", collapseAll);

@@ -9,19 +9,47 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import analysis, datatools, dataviz, excel, presentation
-from ..fs_guard import atomic_write
+from ..fs_guard import PathDenied, atomic_write
 from ..tools import Adapter, Tool, ToolContext, ToolError, ToolResult
+from .filesystem import _find_attachment
 
-PATH = {"type": "string", "description": "Data file (CSV, TSV, JSON or Excel .xlsx) relative to the workspace, e.g. projects/sales/data/orders.csv"}
-SHEET = {"type": "string", "description": "Excel only: sheet name to read (default: the first sheet with data)"}
+PATH = {"type": "string", "description": "Data file: CSV, TSV, TXT, JSON, JSONL, Excel (.xlsx, .xls), OpenDocument (.ods) "
+        "or Parquet. A path in the workspace or project (e.g. projects/sales/orders.csv), or an attached file's name"}
+SHEET = {"type": "string", "description": "Workbooks only: sheet name to read (default: the first sheet with data)"}
 
 
 def _table(ctx: ToolContext, path: str, sheet: str | None = None) -> tuple[Path, dataviz.Table]:
-    resolved = ctx.guard.resolve(path)
+    """Loads a data file from the workspace, or a file attached to the chat (by name or id)."""
+    name = None
     try:
-        return resolved, dataviz.load_table(resolved, sheet or None)
+        resolved = ctx.guard.resolve(path)
+        missing = not resolved.exists()
+    except PathDenied:
+        resolved, missing = None, True
+    if missing:
+        attachment = _find_attachment(ctx, path)
+        if attachment is not None:
+            # Prefer the copy saved in the user's folder; otherwise read the private upload (never written to).
+            saved = attachment.saved_to and ctx.guard.allows(Path(attachment.saved_to)) and ctx.guard.resolve(attachment.saved_to)
+            resolved, name = (saved, None) if saved and saved.exists() else (attachment.path, attachment.name)
+        elif resolved is None:
+            ctx.guard.resolve(path)  # Raises the original, informative PathDenied.
+    try:
+        table = dataviz.load_table(resolved, sheet or None)
     except dataviz.DataError as exc:
         raise ToolError(str(exc)) from exc
+    if name:
+        table.name = name
+    return resolved, table
+
+
+def _project_folder(ctx: ToolContext, source: Path) -> Path:
+    """Where outputs go: next to the source, unless the source is not in the workspace (an attachment), then the
+    folder the user selected."""
+    project = source.parent.parent if source.parent.name.lower() in {"data", "datasets"} else source.parent
+    if ctx.guard.allows(project):
+        return project
+    return ctx.output_dir()
 
 
 async def profile_data(ctx: ToolContext, args: dict) -> ToolResult:
@@ -78,7 +106,7 @@ def _charts(args: dict, table: dataviz.Table) -> list[dataviz.ChartSpec]:
 
 
 def _output_path(ctx: ToolContext, source: Path, folder: str, title: str, suffix: str) -> Path:
-    project = source.parent.parent if source.parent.name.lower() in {"data", "datasets"} else source.parent
+    project = _project_folder(ctx, source)
     return ctx.guard.resolve(str(project / folder / f"{dataviz.safe_dashboard_name(title)}{suffix}"))
 
 
@@ -196,7 +224,8 @@ def _output(ctx: ToolContext, source: Path, args: dict, default_name: str, defau
     if raw:
         target = ctx.guard.resolve(raw)
     else:
-        target = ctx.guard.resolve(str(source.parent / f"{default_name}{default_suffix}"))
+        folder = source.parent if ctx.guard.allows(source.parent) else ctx.output_dir()
+        target = ctx.guard.resolve(str(folder / f"{default_name}{default_suffix}"))
     if target.suffix.lower() not in datatools.WRITABLE:
         raise ToolError(f"output must end in one of: {', '.join(sorted(datatools.WRITABLE))}")
     if target == source:
@@ -222,7 +251,7 @@ def _transform_plan(ctx: ToolContext, args: dict):
     source, table = _table(ctx, args["path"], args.get("sheet"))
     steps = _steps(args)
     suffix = source.suffix.lower() if source.suffix.lower() in datatools.WRITABLE else ".csv"
-    if source.suffix.lower() in dataviz.EXCEL:
+    if source.suffix.lower() in dataviz.WORKBOOKS:
         suffix = ".xlsx"
     target = _output(ctx, source, args, f"{source.stem}_{'clean' if steps else 'copy'}", suffix)
     try:
@@ -269,7 +298,7 @@ def _merge_plan(ctx: ToolContext, args: dict):
         result, notes = datatools.merge(left, right, args.get("how") or "left", args.get("on"))
     except dataviz.DataError as exc:
         raise ToolError(str(exc)) from exc
-    suffix = ".xlsx" if left_path.suffix.lower() in dataviz.EXCEL else (left_path.suffix.lower() if left_path.suffix.lower() in datatools.WRITABLE else ".csv")
+    suffix = ".xlsx" if left_path.suffix.lower() in dataviz.WORKBOOKS else (left_path.suffix.lower() if left_path.suffix.lower() in datatools.WRITABLE else ".csv")
     default = f"{left_path.stem}_{right_path.stem}_{'combined' if (args.get('how') or '') == 'append' else 'merged'}"
     return left, right, result, notes, _output(ctx, left_path, args, default, suffix)
 

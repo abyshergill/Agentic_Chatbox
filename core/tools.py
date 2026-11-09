@@ -65,7 +65,18 @@ class ToolContext:
     def guard(self) -> FsGuard:
         # Rebuilt on each access, so every use sees the current permission.md.
         self.permissions.reload()
-        return FsGuard(self.settings, self.permissions, self.skill_paths)
+        return FsGuard(self.settings, self.permissions, self.skill_paths, base=self.active_path)
+
+    def output_dir(self) -> Path:
+        """The folder generated files go to when no other place is given: the user's selected folder, else the first
+        folder this skill may use."""
+        guard = self.guard
+        if self.active_path:
+            path = guard.resolve(self.active_path)
+            return path if path.is_dir() else path.parent
+        if not guard.roots:
+            raise ToolError("there is no folder to save into; ask the user to select or open one")
+        return guard.roots[0]
 
     def resolve_workdir(self, value: str | None) -> Path:
         guard = self.guard

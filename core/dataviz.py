@@ -18,10 +18,14 @@ from datetime import date, datetime, time
 from html import escape
 from pathlib import Path
 
+from .textcodec import decode
+
 MAX_BYTES = 25 * 1024 * 1024
 MAX_ROWS = 200_000
-SUPPORTED = {".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".xlsm"}
+DELIMITED = {".csv", ".tsv", ".tab", ".psv", ".txt", ".dat"}
 EXCEL = {".xlsx", ".xlsm"}
+WORKBOOKS = EXCEL | {".xls", ".ods"}  # Files with sheets.
+SUPPORTED = DELIMITED | WORKBOOKS | {".json", ".jsonl", ".ndjson", ".parquet"}
 AGGREGATES = {"count", "sum", "mean", "min", "max", "median"}
 CHART_KINDS = {"bar", "line", "area", "pie", "donut", "histogram", "scatter", "box", "heatmap", "stacked", "grouped", "treemap"}
 MISSING = {"", "na", "n/a", "nan", "null", "none", "-"}
@@ -60,10 +64,18 @@ def load_table(path: Path, sheet: str | None = None) -> Table:
     sheet_name, sheet_names = "", []
     if suffix in EXCEL:
         records, sheet_name, sheet_names = _read_excel(path, sheet)
-    elif suffix in {".csv", ".tsv"}:
-        records = _read_delimited(path.read_text(encoding="utf-8-sig", errors="replace"), "\t" if suffix == ".tsv" else None)
+    elif suffix == ".xls":
+        records, sheet_name, sheet_names = _read_xls(path, sheet)
+    elif suffix == ".ods":
+        records, sheet_name, sheet_names = _read_ods(path, sheet)
+    elif suffix == ".parquet":
+        records = _read_parquet(path)
+    elif suffix in DELIMITED:
+        # Any encoding: UTF-8, UTF-16 (Excel "Unicode Text"), or Windows-1252 (Excel "CSV" on Windows).
+        delimiter = {".tsv": "\t", ".tab": "\t", ".psv": "|"}.get(suffix)
+        records = _read_delimited(decode(path.read_bytes()), delimiter)
     else:
-        records = _read_json(path.read_text(encoding="utf-8-sig", errors="replace"), lines=suffix == ".jsonl")
+        records = _read_json(decode(path.read_bytes()), lines=suffix in {".jsonl", ".ndjson"})
     if not records:
         raise DataError(f"'{path.name}' has no data rows")
     truncated = len(records) > MAX_ROWS
@@ -166,6 +178,144 @@ def _read_excel(path: Path, sheet: str | None) -> tuple[list[dict], str, list[st
         raise DataError(f"'{path.name}' has no data" + (f" in sheet '{sheet}'" if sheet else ""))
     finally:
         workbook.close()
+
+
+def _pick_sheets(path: Path, names: list[str], sheet: str | None) -> list[str]:
+    if not sheet:
+        return names
+    match = next((n for n in names if n.lower() == sheet.strip().lower()), None)
+    if match is None:
+        raise DataError(f"no sheet '{sheet}' in {path.name}. Sheets: {', '.join(names)}")
+    return [match]
+
+
+def _records_from_rows(rows) -> list[dict] | None:
+    """The first non-empty row is the header; returns None for an empty sheet."""
+    rows = iter(rows)
+    header = None
+    for row in rows:
+        if any(cell is not None and str(cell).strip() != "" for cell in row):
+            header = list(row)
+            break
+    if header is None:
+        return None
+    while header and (header[-1] is None or str(header[-1]).strip() == ""):
+        header.pop()
+    names_out, seen = [], Counter()
+    for index, raw in enumerate(header):
+        label = str(raw).strip() if raw is not None and str(raw).strip() else f"column_{index + 1}"
+        seen[label] += 1
+        names_out.append(label if seen[label] == 1 else f"{label}_{seen[label]}")
+    records = []
+    for row in rows:
+        row = list(row)
+        if not any(cell is not None and str(cell).strip() != "" for cell in row):
+            continue
+        records.append({label: _excel_value(row[i] if i < len(row) else None) for i, label in enumerate(names_out)})
+        if len(records) > MAX_ROWS:
+            break
+    return records
+
+
+def _read_xls(path: Path, sheet: str | None) -> tuple[list[dict], str, list[str]]:
+    """Old Excel 97-2003 workbooks."""
+    try:
+        import xlrd
+    except ImportError as exc:  # pragma: no cover
+        raise DataError("reading .xls files needs xlrd: pip install xlrd. Or save the file as .xlsx or .csv") from exc
+    try:
+        book = xlrd.open_workbook(str(path), on_demand=True)
+    except Exception as exc:  # xlrd raises several types for damaged files.
+        raise DataError(f"'{path.name}' could not be opened as an Excel 97-2003 workbook: {exc}") from exc
+    try:
+        names = book.sheet_names()
+
+        def cell(c):
+            if c.ctype == xlrd.XL_CELL_DATE:
+                try:
+                    return xlrd.xldate_as_datetime(c.value, book.datemode)
+                except Exception:  # noqa: BLE001 - an invalid date stays a number.
+                    return c.value
+            if c.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                return None
+            if c.ctype == xlrd.XL_CELL_NUMBER and float(c.value).is_integer():
+                return int(c.value)
+            if c.ctype == xlrd.XL_CELL_BOOLEAN:
+                return bool(c.value)
+            return c.value
+
+        for name in _pick_sheets(path, names, sheet):
+            data = book.sheet_by_name(name)
+            records = _records_from_rows([cell(c) for c in data.row(r)] for r in range(data.nrows))
+            if records is not None:
+                return records, name, names
+        raise DataError(f"'{path.name}' has no data" + (f" in sheet '{sheet}'" if sheet else ""))
+    finally:
+        book.release_resources()
+
+
+def _read_ods(path: Path, sheet: str | None) -> tuple[list[dict], str, list[str]]:
+    """OpenDocument spreadsheets (LibreOffice, Numbers export)."""
+    try:
+        from odf import opendocument, table, text
+        from odf.namespaces import OFFICENS, TABLENS
+    except ImportError as exc:  # pragma: no cover
+        raise DataError("reading .ods files needs odfpy: pip install odfpy. Or save the file as .xlsx or .csv") from exc
+    try:
+        doc = opendocument.load(str(path))
+    except Exception as exc:  # noqa: BLE001
+        raise DataError(f"'{path.name}' could not be opened as an OpenDocument spreadsheet: {exc}") from exc
+    sheets = {t.getAttribute("name"): t for t in doc.spreadsheet.getElementsByType(table.Table)}
+    names = list(sheets)
+
+    def value(cell):
+        kind = cell.attributes.get((OFFICENS, "value-type"))
+        if kind in {"float", "percentage", "currency"}:
+            raw = cell.attributes.get((OFFICENS, "value"))
+            try:
+                number = float(raw)
+                return int(number) if number.is_integer() else number
+            except (TypeError, ValueError):
+                pass
+        if kind == "date":
+            return cell.attributes.get((OFFICENS, "date-value"))
+        if kind == "boolean":
+            return cell.attributes.get((OFFICENS, "boolean-value")) == "true"
+        parts = ["".join(str(node) for node in p.childNodes) for p in cell.getElementsByType(text.P)]
+        joined = "\n".join(parts)
+        return joined if joined else None
+
+    def rows(sheet_element):
+        for row in sheet_element.getElementsByType(table.TableRow):
+            cells = []
+            for cell in row.childNodes:
+                if cell.qname[1] not in {"table-cell", "covered-table-cell"}:
+                    continue
+                repeat = int(cell.attributes.get((TABLENS, "number-columns-repeated"), 1) or 1)
+                cells.extend([value(cell)] * min(repeat, 512))  # Trailing empty cells repeat thousands of times.
+            row_repeat = int(row.attributes.get((TABLENS, "number-rows-repeated"), 1) or 1)
+            for _ in range(min(row_repeat, 1 if not any(c is not None for c in cells) else row_repeat)):
+                yield cells
+
+    for name in _pick_sheets(path, names, sheet):
+        records = _records_from_rows(rows(sheets[name]))
+        if records is not None:
+            return records, name, names
+    raise DataError(f"'{path.name}' has no data" + (f" in sheet '{sheet}'" if sheet else ""))
+
+
+def _read_parquet(path: Path) -> list[dict]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:  # pragma: no cover
+        raise DataError("reading .parquet files needs pyarrow: pip install pyarrow") from exc
+    try:
+        data = pq.read_table(path)
+    except Exception as exc:  # noqa: BLE001
+        raise DataError(f"'{path.name}' could not be read as Parquet: {exc}") from exc
+    records = data.slice(0, MAX_ROWS + 1).to_pylist()
+    return [{str(k): _excel_value(v) if isinstance(v, (datetime, date, time)) or v is None
+             or isinstance(v, (str, int, float, bool)) else str(v) for k, v in row.items()} for row in records]
 
 
 def _excel_value(value):

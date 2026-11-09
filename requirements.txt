@@ -9,3 +9,7 @@ pywebview>=5,<7
 send2trash>=1.8,<3
 openpyxl>=3.1,<4
 python-docx>=1.1,<2
+# More file formats: old Excel (.xls), OpenDocument (.ods/.odt/.odp), Parquet. Each is optional at runtime.
+xlrd>=2.0,<3
+odfpy>=1.4,<2
+pyarrow>=15

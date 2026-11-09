@@ -11,7 +11,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-SKILL_FIELDS = ("Title", "Description", "Allowed Paths", "Model")
 COMMAND_LINE = re.compile(r"^(/[A-Za-z0-9][\w-]*)\s*->\s*(\S+\.md)\s*$")
 AGENT_LINE = re.compile(r"^-\s*([\w-]+)\s*:\s*(.+)$")
 HEADER_LINE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.*)$")
@@ -67,6 +66,26 @@ class Registry:
     def skill_for(self, command: str) -> Skill | None:
         return self.commands.get(command)
 
+    def find_skill(self, name: str) -> Skill | None:
+        """Finds a skill from a loosely written name, as models write them: '/dashboard', 'dashboard',
+        '/create_dashboard', 'build_dashboard', 'Build Dashboard'. Exact matches win; then the skill whose command,
+        file name or title is contained in the name."""
+        def norm(text: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+        wanted = norm(name or "")
+        if not wanted:
+            return None
+        valid = [s for s in self.commands.values() if s.valid]
+        for skill in valid:
+            if wanted in {norm(skill.command or ""), norm(skill.id), norm(skill.title)}:
+                return skill
+        contained = [s for s in valid if norm(s.command or "") and norm(s.command or "") in wanted]
+        contained += [s for s in valid if norm(s.id) in wanted and s not in contained]
+        if contained:
+            return max(contained, key=lambda s: len(norm(s.command or s.id)))  # The most specific match.
+        return None
+
     @property
     def default_skill(self) -> Skill | None:
         return self.commands.get(self.system.default_skill)
@@ -75,11 +94,55 @@ class Registry:
         return [skill for skill in self.commands.values() if skill.valid]
 
 
-def parse_skill(path: Path, agent_id: str) -> Skill:
-    """Parses a skill file: Title, Description and Allowed Paths on the first three lines, in that order.
+HEADER_SCAN_LINES = 8  # Skill and agent details live in the first 8 lines of the file.
+DEFAULT_ALLOWED_PATHS = ["./workspace/projects"]
 
-    A fourth 'Model:' line is optional. Without it the skill runs on the model picked in the chat pane,
-    or on an installed model chosen automatically.
+
+def read_header(lines: list[str], limit: int = HEADER_SCAN_LINES) -> tuple[dict[str, str], str, str]:
+    """Reads 'Field: value' lines from the top of a file.
+
+    Looks at the first `limit` non-blank lines only. Blank lines and an optional '# Heading' first line are allowed,
+    so both of these work:
+
+        Title: X                # X
+        Description: Y
+        Allowed Paths: Z        Title: X
+
+                                Description: Y
+
+    The header ends at the first other line (such as '## Instructions'). Returns (fields, heading, body).
+    """
+    fields: dict[str, str] = {}
+    heading = ""
+    body_start = 0
+    seen = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if seen >= limit:
+            break
+        seen += 1
+        if stripped.startswith("# ") and not heading and not fields:
+            heading = stripped[2:].strip()
+        else:
+            match = HEADER_LINE.match(stripped)
+            if not match:
+                break
+            fields[match.group(1).strip().title()] = match.group(2).strip()
+        body_start = index + 1
+    return fields, heading, "\n".join(lines[body_start:]).strip()
+
+
+def parse_skill(path: Path, agent_id: str) -> Skill:
+    """Parses a skill file. Its details are read from the first 8 lines:
+
+        Title: (or Name:, or a '# Heading')   required
+        Description:                           required
+        Allowed Paths:                         optional, comma separated; defaults to ./workspace/projects
+        Model:                                 optional; without it the model picked in the chat is used
+
+    Everything after those lines is the skill's instructions.
     """
     skill = Skill(id=path.stem, agent_id=agent_id, path=path)
     try:
@@ -88,32 +151,25 @@ def parse_skill(path: Path, agent_id: str) -> Skill:
         skill.errors.append(f"cannot read file: {exc}")
         return skill
 
-    has_model = len(lines) > 3 and lines[3].startswith("Model:")
-    fields = SKILL_FIELDS if has_model else SKILL_FIELDS[:3]
-    values: list[str] = []
-    for index, name in enumerate(fields):
-        line = lines[index] if index < len(lines) else ""
-        prefix = f"{name}:"
-        if not line.startswith(prefix):
-            skill.errors.append(f"line {index + 1} must start with '{prefix}'")
-            values.append("")
-            continue
-        value = line[len(prefix):].strip()
-        if not value:
-            skill.errors.append(f"line {index + 1}: {name} is empty")
-        values.append(value)
+    fields, heading, body = read_header(lines)
+    skill.title = fields.get("Title") or fields.get("Name") or heading
+    skill.description = fields.get("Description", "")
+    paths = fields.get("Allowed Paths")
+    skill.allowed_paths = [p.strip() for p in paths.split(",") if p.strip()] if paths else list(DEFAULT_ALLOWED_PATHS)
+    skill.model = fields.get("Model", "")
+    skill.prompt = body
 
-    skill.title, skill.description = values[0], values[1]
-    skill.allowed_paths = [part.strip() for part in values[2].split(",") if part.strip()]
-    skill.model = values[3] if has_model else ""
-    skill.prompt = "\n".join(lines[len(fields):]).strip()
-
-    if values[2] and not skill.allowed_paths:
-        skill.errors.append("line 3: Allowed Paths has no usable path")
+    where = f"in the first {HEADER_SCAN_LINES} lines"
+    if not skill.title:
+        skill.errors.append(f"no 'Title:' line (or '# Heading') {where}")
+    if not skill.description:
+        skill.errors.append(f"no 'Description:' line {where}")
+    if paths is not None and not skill.allowed_paths:
+        skill.errors.append("'Allowed Paths:' has no usable path")
     if skill.model.endswith(("-cloud", ":cloud")):
-        skill.errors.append("line 4: cloud models are not allowed; this workspace is local-only")
+        skill.errors.append("'Model:' cloud models are not allowed; this workspace is local-only")
     if not skill.prompt:
-        skill.errors.append(f"line {len(fields) + 1} onward: system instructions are missing")
+        skill.errors.append("the instructions after the header are missing")
     return skill
 
 
@@ -126,8 +182,8 @@ def parse_agent(directory: Path) -> Agent:
         agent.errors.append(f"cannot read agent.md: {exc}")
         return agent
 
-    headers, body = _split_headers(lines)
-    agent.name = headers.get("Name", directory.name)
+    headers, heading, body = read_header(lines)
+    agent.name = headers.get("Name") or heading or directory.name
     agent.description = headers.get("Description", "")
     agent.capabilities = _csv(headers.get("Capabilities", ""))
     agent.applications = [app.lstrip("#") for app in _csv(headers.get("Applications", ""))]
@@ -144,8 +200,8 @@ def parse_system(path: Path, warnings: list[str]) -> SystemConfig:
         warnings.append(f"system.md: {exc}")
         return config
 
-    headers, body = _split_headers(lines)
-    config.name = headers.get("Name", config.name)
+    headers, heading, body = read_header(lines, limit=12)
+    config.name = headers.get("Name") or heading or config.name
     config.default_skill = headers.get("Default Skill", "")
     try:
         config.max_iterations = max(1, min(50, int(headers.get("Max Tool Iterations", "12"))))
@@ -231,19 +287,6 @@ def _parse_commands(arch_dir: Path, skills: dict[Path, Skill], warnings: list[st
         skill.command = command
         commands[command] = skill
     return commands
-
-
-def _split_headers(lines: list[str]) -> tuple[dict[str, str], str]:
-    headers: dict[str, str] = {}
-    index = 0
-    for index, line in enumerate(lines):
-        match = HEADER_LINE.match(line)
-        if not match:
-            break
-        headers[match.group(1).strip()] = match.group(2).strip()
-    else:
-        index = len(lines)
-    return headers, "\n".join(lines[index:]).strip()
 
 
 def _csv(value: str) -> list[str]:

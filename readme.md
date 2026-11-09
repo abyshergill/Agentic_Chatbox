@@ -224,7 +224,9 @@ raw JSON instead of acting, edit the provider and turn off **native tool calling
 
 ## Configuration
 
-Everything is in `arch/`. Files are re-read on each request, so edits apply without a restart.
+Everything is in `arch/`. Files are re-read on each request, so edits apply without a restart. The explorer shows
+`arch/` at the bottom (**arch · agents & skills**), so you can open and edit any agent or skill right in the app. The
+assistant's own tools still cannot read or change it.
 
 ```
 arch/
@@ -240,16 +242,29 @@ arch/
 
 ### Adding a skill
 
-Create the file. The first three lines are strict, in this order; a malformed skill is listed as a warning and cannot be
-activated. Leave out the model: the skill runs on the model picked in the chat pane. (An optional fourth line,
-`Model: <name>`, pins one, but it is not needed.)
+Create the file. Its details are read from the **first 8 non-blank lines**, in any order, and a `# Heading` and blank
+lines are allowed. The header ends at the first other line (such as `## Instructions`); everything after it is the
+skill's instructions. A skill missing a title or description is listed as a warning and cannot be activated.
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `Title:` | yes | `Name:` or the `# Heading` also work |
+| `Description:` | yes | Also used to route plain messages to the skill |
+| `Allowed Paths:` | no | Comma separated. Default: `./workspace/projects` |
+| `Model:` | no | Pins a model; otherwise the one picked in the chat pane is used |
 
 ```
+# Database Migration
+
 Title: Database Migration
+
 Description: Handles database schema changes and migrations.
+
 Allowed Paths: ./workspace/projects, ./workspace/database
 
-You are an expert database migration engineer.
+## Instructions
+
+You change database schemas safely.
 ...
 ```
 
@@ -275,6 +290,36 @@ You are a careful operations engineer.
 
 Add `Read Only: yes` under `Applications:` to offer the agent only tools that look (list, read, search, status, diff,
 profile, query, analyze, describe), whatever `permission.md` allows.
+
+### Your own folders and where generated files go
+
+Use **Open Folder** (the folder icon at the top of the explorer) to add any folder on your computer. In the desktop
+app this opens the system folder picker; in a browser, type the full path, and tick the box to create it if needed.
+Opened folders are remembered, every skill can use them in addition to its `Allowed Paths`, and right-clicking one offers
+**Remove Folder from Explorer** (nothing on disk is deleted).
+
+The folder selected in the explorer is where the assistant saves what it generates. If you attach a file in the chat
+with no folder selected, you are asked where to save: pick a folder, create a new one, open another folder, or choose
+**Attach Only**. The attached file is copied there, so the data and document tools can work on it.
+
+### File formats
+
+| Kind | Formats | Used by |
+| --- | --- | --- |
+| Data tables | `.csv` (comma, semicolon, tab or pipe), `.tsv`, `.tab`, `.psv`, `.txt`/`.dat` tables, `.json`, `.jsonl`/`.ndjson`, Excel `.xlsx`/`.xlsm`/`.xls`, OpenDocument `.ods`, `.parquet` | `#data` tools: profile, query, analyze, dashboards, presentations, workbooks |
+| Documents | PDF, Word `.docx`/`.doc`/`.rtf`, OpenDocument `.odt`/`.odp`, PowerPoint `.pptx`, Jupyter `.ipynb`, HTML | `read_file`, attachments, the editor (read-only) |
+| Text | Markdown, code, logs, XML, YAML, TOML, INI... | Everything |
+
+Text is read in any common encoding: UTF-8, UTF-16 (Excel's "Unicode Text"), and Windows-1252 (Excel's "CSV" on
+Windows), so accented letters come through intact. A data file attached to the chat can be analyzed directly by its
+name, and relative paths such as `orders.csv` or `data/orders.csv` are looked up in the selected project first. `.xls`,
+`.ods`/`.odp` and `.parquet` need `xlrd`, `odfpy` and `pyarrow` (in `requirements.txt`).
+
+### Chat history
+
+Conversations are saved to SQLite in `data/workspace.db` after every reply. **History** in the chat pane lists them:
+click one to continue it, or rename or delete it. **New chat** starts a fresh conversation and keeps the old one in
+History. The app reopens your last conversation when it starts.
 
 ### Changing permissions
 
@@ -332,8 +377,8 @@ purpose. Enabling it does nothing until someone writes an adapter.
 
 These checks run in Python on every action, whatever the model says:
 
-- **Paths:** symlinks are resolved first, then the path must be inside the skill's `Allowed Paths`, which are themselves
-  clamped to the global `Roots`. App internals (`arch/`, `logs/`, `core/`, and so on), `.git`, and secret-looking files
+- **Paths:** symlinks are resolved first, then the path must be inside the skill's `Allowed Paths` (clamped to the
+  global `Roots`) or a folder you opened in the explorer. App internals (`arch/`, `logs/`, `core/`, and so on), `.git`, and secret-looking files
   (`.env`, keys, `credentials*`) are always blocked.
 - **Terminal:** no shell. Commands run directly from an allowlist, so pipes and redirects do nothing. Shells, `sudo`, and
   network tools are refused even if you add them to the list. The environment is scrubbed and processes have a timeout.

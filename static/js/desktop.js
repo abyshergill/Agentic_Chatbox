@@ -21,6 +21,7 @@ export async function absolutePath(path) {
 
 export const openNative = (path) => call("open_path", path);
 export const chooseGguf = () => window.pywebview.api.choose_gguf();
+export const chooseFolder = () => window.pywebview.api.choose_folder();
 export const revealNative = (path) => call("reveal_path", path);
 
 export function initDesktop() {

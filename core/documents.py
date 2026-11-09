@@ -1,4 +1,7 @@
-"""Reading documents as text (PDF, Word, Excel, HTML, Markdown, CSV, plain text) and writing Word documents.
+"""Reading documents as text and writing Word documents.
+
+Reads PDF, Word (.docx, .doc, .rtf), OpenDocument (.odt, .ods, .odp), PowerPoint (.pptx), Excel (.xlsx, .xlsm, .xls),
+Parquet, Jupyter notebooks, HTML, and any text file (CSV, Markdown, code, JSON, logs...) in any common encoding.
 
 Reading is shared by the assistant's read_file tool, the editor, chat attachments and files added as context, so every
 part of the app understands the same formats. Writing turns Markdown-style text (headings, lists, tables, bold,
@@ -14,8 +17,10 @@ import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 
-# Formats that need converting to text. Everything else is read as UTF-8 text.
-DOCUMENT_TYPES = {".pdf", ".docx", ".doc", ".rtf", ".odt", ".xlsx", ".xlsm"}
+from .textcodec import decode, looks_binary
+
+# Formats that need converting to text, and are shown read-only in the editor. Everything else is read as text.
+DOCUMENT_TYPES = {".pdf", ".docx", ".doc", ".rtf", ".odt", ".odp", ".ods", ".xlsx", ".xlsm", ".xls", ".pptx", ".parquet"}
 HTML_TYPES = {".html", ".htm"}
 
 
@@ -39,10 +44,19 @@ def extract_text(path: Path, limit: int, *, html_as_text: bool = True) -> tuple[
         text = _pdf(path, limit)
     elif suffix == ".docx":
         text = _docx(path)
-    elif suffix in {".doc", ".rtf", ".odt"}:
+    elif suffix in {".odt", ".odp"}:
+        text = _odf_text(path)
+    elif suffix in {".doc", ".rtf"}:
         text = _textutil(path)
     elif suffix in {".xlsx", ".xlsm"}:
         text = _xlsx(path, limit)
+    elif suffix in {".xls", ".ods", ".parquet"}:
+        text = _table_text(path, limit)
+    elif suffix == ".pptx":
+        text = _pptx(path)
+    elif suffix == ".ipynb":
+        text, truncated = _plain(path, limit * 4)
+        return _notebook(text, limit)
     else:
         text, truncated = _plain(path, limit)
         if suffix in HTML_TYPES and html_as_text:
@@ -55,9 +69,11 @@ def _plain(path: Path, limit: int) -> tuple[str, bool]:
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(fd, "rb") as handle:
         data = handle.read(limit + 1)
-    if b"\x00" in data[:8192]:
-        raise DocumentError("this looks like a binary file, not text")
-    return data[:limit].decode("utf-8", errors="replace"), len(data) > limit
+    if looks_binary(data):
+        raise DocumentError(f"'{path.name}' is a binary file, not text, so it cannot be read")
+    # UTF-8, UTF-16 (Excel "Unicode Text"), Windows-1252 and Latin-1 files are all understood.
+    text = decode(data[: limit + 3], partial=len(data) > limit)
+    return text[:limit], len(data) > limit
 
 
 def _pdf(path: Path, limit: int) -> str:
@@ -116,6 +132,106 @@ def _docx(path: Path) -> str:
                 lines.append("|" + " --- |" * len(rows[0]))
                 lines += ["| " + " | ".join(row) + " |" for row in rows[1:]]
     return "\n\n".join(lines) if lines else "(this document has no text)"
+
+
+def _odf_text(path: Path) -> str:
+    """OpenDocument text and presentations, on any platform."""
+    try:
+        from odf import opendocument, teletype, text as odf_text
+        from odf.draw import Page
+    except ImportError:
+        if path.suffix.lower() == ".odt":
+            return _textutil(path)
+        raise DocumentError("reading .odp files needs odfpy: pip install odfpy") from None
+    try:
+        doc = opendocument.load(str(path))
+    except Exception as exc:  # noqa: BLE001
+        raise DocumentError(f"could not read {path.name}: {exc}") from exc
+    if path.suffix.lower() == ".odp":
+        slides = []
+        for number, page in enumerate(doc.presentation.getElementsByType(Page), 1):
+            lines = [teletype.extractText(p).strip() for p in page.getElementsByType(odf_text.P)]
+            slides.append(f"--- slide {number} ---\n" + "\n".join(line for line in lines if line))
+        return "\n\n".join(slides) or "(this presentation has no text)"
+    blocks = []
+    for element in doc.text.childNodes:
+        content = teletype.extractText(element).strip()
+        if not content:
+            continue
+        if element.qname[1] == "h":
+            level = int(element.attributes.get((element.qname[0], "outline-level"), 1) or 1)
+            content = f"{'#' * min(level, 6)} {content}"
+        blocks.append(content)
+    return "\n\n".join(blocks) or "(this document has no text)"
+
+
+def _pptx(path: Path) -> str:
+    try:
+        from pptx import Presentation
+
+        deck = Presentation(str(path))
+    except Exception as exc:  # noqa: BLE001
+        raise DocumentError(f"could not read this PowerPoint file: {exc}") from exc
+    slides = []
+    for number, slide in enumerate(deck.slides, 1):
+        lines = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                text = shape.text_frame.text.strip()
+                if text:
+                    lines.append(text)
+            if getattr(shape, "has_table", False) and shape.has_table:
+                for row in shape.table.rows:
+                    lines.append("| " + " | ".join(cell.text.strip() for cell in row.cells) + " |")
+        if slide.has_notes_slide:
+            notes = slide.notes_slide.notes_text_frame.text.strip()
+            if notes:
+                lines.append(f"(speaker notes) {notes}")
+        slides.append(f"--- slide {number} of {len(deck.slides)} ---\n" + "\n".join(lines))
+    return "\n\n".join(slides) or "(this presentation has no slides)"
+
+
+def _table_text(path: Path, limit: int) -> str:
+    """Old Excel, OpenDocument spreadsheets and Parquet, shown as CSV text (first sheet with data)."""
+    import csv
+
+    from .dataviz import DataError, load_table
+
+    try:
+        table = load_table(path)
+    except DataError as exc:
+        raise DocumentError(str(exc)) from exc
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    if table.sheets:
+        buffer.write(f"--- sheet {table.sheet} (sheets: {', '.join(table.sheets)}) ---\n")
+    writer.writerow(table.columns)
+    for row in table.rows:
+        writer.writerow(["" if row[c] is None else row[c] for c in table.columns])
+        if buffer.tell() > limit:
+            break
+    return buffer.getvalue()
+
+
+def _notebook(text: str, limit: int) -> tuple[str, bool]:
+    """A Jupyter notebook as its cells, without the JSON and embedded images."""
+    import json
+
+    try:
+        cells = json.loads(text).get("cells", [])
+    except (ValueError, AttributeError):
+        return text[:limit], len(text) > limit
+    parts = []
+    for number, cell in enumerate(cells, 1):
+        source = "".join(cell.get("source", [])) if isinstance(cell.get("source"), list) else str(cell.get("source", ""))
+        kind = cell.get("cell_type", "code")
+        parts.append(f"--- cell {number} ({kind}) ---\n{source}")
+        for output in cell.get("outputs", []) if kind == "code" else []:
+            out = output.get("text") or output.get("data", {}).get("text/plain")
+            if out:
+                parts.append("[output]\n" + ("".join(out) if isinstance(out, list) else str(out))[:2000])
+    joined = "\n\n".join(parts)
+    return joined[:limit], len(joined) > limit
 
 
 def _textutil(path: Path) -> str:
