@@ -51,3 +51,49 @@ Maps slash commands to skills. Paths are relative to arch/.
 /fix-tests -> agents/test_engineer/skills/fix_tests.md
 
 /review -> agents/code_analyst/skills/review_changes.md
+
+/write-script -> agents/general/skills/write_script.md
+
+/files -> agents/general/skills/file_operations.md
+
+/git -> agents/general/skills/git_help.md
+
+/backend-tests -> agents/backend_dev/skills/write_tests.md
+
+/debug-server -> agents/backend_dev/skills/debug_server_error.md
+
+/optimize-query -> agents/backend_dev/skills/query_optimization.md
+
+/build-component -> agents/frontend_dev/skills/build_component.md
+
+/accessibility -> agents/frontend_dev/skills/accessibility_audit.md
+
+/web-performance -> agents/frontend_dev/skills/frontend_performance.md
+
+/debug -> agents/code_analyst/skills/debug_error.md
+
+/impact -> agents/code_analyst/skills/impact_analysis.md
+
+/overview -> agents/code_analyst/skills/project_overview.md
+
+/plan -> agents/orchestrator/skills/plan_task.md
+
+/workflow -> agents/orchestrator/skills/workflows.md
+
+/agents -> agents/agent_manager/skills/list_agents.md
+
+/create-agent -> agents/agent_manager/skills/create_agent.md
+
+/update-agent -> agents/agent_manager/skills/update_agent.md
+
+/delete-agent -> agents/agent_manager/skills/delete_agent.md
+
+/validate-agents -> agents/agent_manager/skills/validate_agents.md
+
+/scrape -> agents/web_scraper/skills/scrape_page.md
+
+/extract-tables -> agents/web_scraper/skills/extract_tables.md
+
+/crawl -> agents/web_scraper/skills/crawl_site.md
+
+/web-research -> agents/web_scraper/skills/web_research.md

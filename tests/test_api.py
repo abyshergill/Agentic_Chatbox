@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 SID = "testsession01"
@@ -76,16 +77,27 @@ def test_tree_hides_symlinks_leading_out(client, settings, base):
 def test_read_file_endpoint_enforces_the_guard(client):
     read = lambda path: client.get("/api/files/read", params={"session_id": SID, "path": path})
     assert read("projects/demo/hello.py").json()["content"] == "print('hi')\n"
-    for bad in ["../arch/permission.md", "projects/demo/.env", "/etc/passwd", "projects/../../outside.txt"]:
+    for bad in ["projects/demo/.env", "/etc/passwd", "projects/../../outside.txt", "../core/agent.py"]:
         assert read(bad).status_code == 403, bad
+    # The user's explorer shows arch/ so agents and skills can be edited in the app.
+    assert "APPLICATION" in read("../arch/permission.md").json()["content"]
+
+
+def test_assistant_tools_still_cannot_reach_arch(settings):
+    from core.fs_guard import FsGuard, PathDenied
+    from core.permissions import PermissionManager
+
+    guard = FsGuard(settings, PermissionManager(settings.arch_dir / "permission.md"), ["./workspace", "./arch"])
+    with pytest.raises(PathDenied):
+        guard.resolve(str(settings.arch_dir / "permission.md"))
 
 
 def test_write_file_endpoint_enforces_the_guard(client, base):
     write = lambda path: client.post("/api/files/write", json={"session_id": SID, "path": path, "content": "x"})
     assert write("projects/demo/saved.txt").status_code == 200
-    for bad in ["../arch/permission.md", "../main.py", "projects/demo/.env", "/tmp/evil"]:
+    for bad in ["../main.py", "../core/x.py", "projects/demo/.env", "/tmp/evil"]:
         assert write(bad).status_code == 403, bad
-    assert "APPLICATION" in (base / "arch" / "permission.md").read_text()
+    assert write("../arch/agents/general/skills/mine.md").status_code == 200  # The user may edit skills.
 
 
 def test_write_detects_a_stale_copy(client):
@@ -120,7 +132,7 @@ def test_upload_filename_cannot_traverse_and_is_not_executable(client, settings)
 
 
 def test_upload_target_dir_is_checked(client, settings):
-    assert upload(client, "a.md", b"x", target_dir="../arch").status_code == 403
+    assert upload(client, "a.md", b"x", target_dir="../core").status_code == 403
     ok = upload(client, "a.md", b"x", target_dir="projects/demo")
     assert ok.status_code == 200 and (settings.workspace_root / "projects/demo/a.md").read_bytes() == b"x"
 

@@ -6,7 +6,8 @@ Linux) instead of a browser tab. The server still listens only on 127.0.0.1, on 
 Desktop extras, exposed to the page as `window.pywebview.api`:
 - open_path: open a generated file (a .pptx, a PDF, an image...) in its default app, such as Keynote or PowerPoint.
 - reveal_path: show a file in Finder / Explorer.
-Both accept only paths inside the workspace, and open_path only document and image types, never programs or scripts.
+- choose_folder: a native folder picker for opening a folder in the explorer.
+open_path and reveal_path accept only paths inside the workspace, a folder the user opened, or arch/, and open_path only document and image types, never programs or scripts.
 """
 
 from __future__ import annotations
@@ -67,13 +68,21 @@ def start_ollama() -> subprocess.Popen | None:
 
 
 def workspace_file(path: str) -> Path:
-    """Resolves a workspace-relative path from the UI, refusing anything outside the workspace."""
+    """Resolves a path from the UI: workspace-relative, or absolute inside a folder the user opened or arch/.
+
+    Refuses anything else, including symlinks that point outside those places.
+    """
     root = SETTINGS.workspace_root.resolve()
-    relative = str(path or "").strip().lstrip("/")
-    if relative.startswith("workspace/"):
-        relative = relative[len("workspace/"):]
-    target = (root / relative).resolve()  # Follows symlinks, so a link pointing outside is caught below.
-    if target != root and not target.is_relative_to(root):
+    text = str(path or "").strip()
+    allowed = [root, SETTINGS.arch_dir.resolve(), *(Path(f).resolve() for f in SETTINGS.extra_roots)]
+    if text.startswith("/") and any(Path(text).resolve().is_relative_to(a) for a in allowed[1:]):
+        target = Path(text).resolve()
+    else:
+        relative = text.lstrip("/")
+        if relative.startswith("workspace/"):
+            relative = relative[len("workspace/"):]
+        target = (root / relative).resolve()  # Follows symlinks, so a link pointing outside is caught below.
+    if not any(target == a or target.is_relative_to(a) for a in allowed):
         raise ValueError("That file is outside the workspace.")
     if not target.exists():
         raise ValueError("That file does not exist.")
@@ -116,6 +125,14 @@ class DesktopApi:
             return None
         picked = window.create_file_dialog(webview.FileDialog.OPEN, directory=str(Path.home()),
                                            file_types=("GGUF models (*.gguf)", "All files (*.*)"))
+        return picked[0] if picked else None
+
+    def choose_folder(self):
+        """Native folder picker for 'Open Folder…' and 'Where should files be saved?'. Returns the path, or None."""
+        window = webview.windows[0] if webview.windows else None
+        if window is None:
+            return None
+        picked = window.create_file_dialog(webview.FileDialog.FOLDER, directory=str(Path.home()))
         return picked[0] if picked else None
 
     def reveal_path(self, path: str):

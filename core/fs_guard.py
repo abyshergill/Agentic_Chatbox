@@ -1,8 +1,12 @@
 """The single gate for every filesystem path the AI or the UI touches.
 
 A path is usable only if, after symlinks are resolved, it sits inside the skill's
-allowed paths, those paths sit inside the global roots from permission.md, and it
-is neither an application internal nor a secret.
+allowed paths (intersected with the global roots from permission.md) or inside a
+folder the user opened in the explorer, and it is neither an application internal
+nor a secret.
+
+The user's own explorer additionally sees arch/ (include_config=True), so agents and
+skills can be edited in the app. The assistant's tools never get that flag.
 """
 
 from __future__ import annotations
@@ -34,12 +38,23 @@ def is_secret_name(name: str) -> bool:
 
 
 class FsGuard:
-    def __init__(self, settings: Settings, permissions: PermissionManager, skill_paths: list[str]):
+    def __init__(self, settings: Settings, permissions: PermissionManager, skill_paths: list[str],
+                 include_config: bool = False, include_user_folders: bool = True, base: str | None = None):
         self.settings = settings
+        self.base = base  # The selected project. Relative paths the workspace does not have are tried there.
         self.permissions = permissions
         self.skill_paths = skill_paths
+        self.include_config = include_config
+        self.config_root = settings.arch_dir.resolve()
         self.global_roots = self._global_roots()
         self.roots = self._effective_roots()
+        if include_user_folders and self.global_roots:  # Filesystem access disabled means no folders at all.
+            for folder in settings.extra_roots:
+                folder = Path(folder).resolve()
+                if folder not in self.roots and not any(folder.is_relative_to(r) for r in self.roots):
+                    self.roots.append(folder)
+        if include_config and self.config_root not in self.roots:
+            self.roots.append(self.config_root)
 
     def _global_roots(self) -> list[Path]:
         app = self.permissions.app("filesystem")
@@ -90,8 +105,31 @@ class FsGuard:
             parts = path.parts
             if parts and parts[0] == "workspace":  # Models often include this prefix.
                 path = Path(*parts[1:]) if len(parts) > 1 else Path(".")
-            path = self.settings.workspace_root / path
+            in_workspace = (self.settings.workspace_root / path).resolve()
+            project = self._base_dir()
+            if project is None or in_workspace.exists() or project == in_workspace:
+                return in_workspace
+            # "orders.csv" or "data/orders.csv" usually means inside the selected project, as in any editor.
+            in_project = (project / path).resolve()
+            first = path.parts[0] if path.parts else ""
+            if in_project.exists() or not (self.settings.workspace_root / first).exists():
+                return in_project
+            return in_workspace
         return path.resolve()
+
+    def _base_dir(self) -> Path | None:
+        if not self.base or not str(self.base).strip():
+            return None
+        base = Path(str(self.base).strip())
+        if not base.is_absolute():
+            parts = base.parts
+            if parts and parts[0] == "workspace":
+                base = Path(*parts[1:]) if len(parts) > 1 else Path(".")
+            base = self.settings.workspace_root / base
+        base = base.resolve()
+        if base.is_file():
+            base = base.parent
+        return base if base.is_dir() else None
 
     def _authorize(self, path: Path) -> None:
         root = next((r for r in self.roots if path == r or path.is_relative_to(r)), None)
@@ -99,7 +137,10 @@ class FsGuard:
             raise PathDenied(f"'{self.display(path)}' is outside the paths this skill may access")
 
         folded = str(path).casefold()
+        editing_config = self.include_config and (path == self.config_root or path.is_relative_to(self.config_root))
         for protected in self.settings.protected_paths:
+            if editing_config and protected.resolve() == self.config_root:
+                continue
             mark = str(protected).casefold()
             if folded == mark or folded.startswith(mark + os.sep):
                 raise PathDenied(f"'{self.display(path)}' is an application internal and cannot be accessed")
@@ -123,10 +164,18 @@ class FsGuard:
         try:
             return path.relative_to(self.settings.workspace_root).as_posix() or "."
         except ValueError:
-            return str(path)  # Only reachable for roots the user configured outside workspace/.
+            return path.as_posix()  # Folders the user opened outside workspace/, and arch/.
 
     def root_labels(self) -> list[str]:
         return [self.display(root) for root in self.roots]
+
+    def root_kind(self, root: Path) -> str:
+        """'config' for arch/, 'folder' for a folder the user opened, 'workspace' otherwise."""
+        if root == self.config_root:
+            return "config"
+        if root in {Path(f).resolve() for f in self.settings.extra_roots}:
+            return "folder"
+        return "workspace"
 
 
 def atomic_write(path: Path, content: str | bytes) -> None:
@@ -154,6 +203,8 @@ def read_text_limited(path: Path, limit: int) -> tuple[str, bool]:
         data = handle.read(limit + 1)
     truncated = len(data) > limit
     data = data[:limit]
-    if b"\x00" in data:
+    from .textcodec import decode, looks_binary
+
+    if looks_binary(data):
         raise ValueError("this looks like a binary file")
-    return data.decode("utf-8", errors="replace"), truncated
+    return decode(data, partial=truncated), truncated  # UTF-8, UTF-16, Windows-1252 or Latin-1.

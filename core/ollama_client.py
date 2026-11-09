@@ -36,6 +36,7 @@ class ChatTurn:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     done_reason: str = ""
+    thinking: str = ""  # Reasoning from "thinking" models (qwen3, deepseek-r1...); not shown, but kept as a fallback.
 
 
 def parse_text_tool_calls(text: str, allowed: set[str]) -> tuple[str, list[ToolCall]]:
@@ -256,6 +257,7 @@ class OllamaClient:
             for raw in message.get("tool_calls") or []:
                 function = raw.get("function") or {}
                 builder.add_call(function.get("name", ""), function.get("arguments") or {})
+            builder.turn.thinking += message.get("thinking") or ""
             await builder.feed(message.get("content") or "")
             if chunk.get("done"):
                 builder.turn.done_reason = chunk.get("done_reason", "")

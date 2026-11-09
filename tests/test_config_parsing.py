@@ -25,9 +25,8 @@ def test_model_line_is_optional(tmp_path):
 
 def test_malformed_skills_are_invalid(tmp_path):
     bad = [
-        "Description: D\nTitle: T\nAllowed Paths: x\nModel: m\n\nbody",  # Wrong order.
-        "Title: T\nAllowed Paths: x\nModel: m\n\nbody",  # Missing field.
-        "\nTitle: T\nDescription: D\nAllowed Paths: x\nModel: m\n\nbody",  # Shifted down a line.
+        "Title: T\nAllowed Paths: x\nModel: m\n\nbody",  # Missing description.
+        "1\n2\n3\n4\n5\n6\n7\n8\nTitle: T\nDescription: D\n\nbody",  # Not in the first 8 lines.
         "Title: \nDescription: D\nAllowed Paths: x\nModel: m\n\nbody",  # Empty value.
         "Title: T\nDescription: D\nAllowed Paths: ,\nModel: m\n\nbody",  # No usable path.
         "Title: T\nDescription: D\nAllowed Paths: x\nModel: m\n\n",  # No instructions.
@@ -36,6 +35,16 @@ def test_malformed_skills_are_invalid(tmp_path):
     ]
     for text in bad:
         assert not write(tmp_path, text).valid, text
+
+
+def test_header_order_headings_and_blank_lines_are_flexible(tmp_path):
+    text = "# My Skill\n\nDescription: D\n\nTitle: T\n\nAllowed Paths: x, y\n\nModel: m\n## Instructions\nbody"
+    skill = write(tmp_path, text)
+    assert skill.valid, skill.errors
+    assert (skill.title, skill.description, skill.allowed_paths, skill.model) == ("T", "D", ["x", "y"], "m")
+    assert skill.prompt == "## Instructions\nbody"
+    named = write(tmp_path, "# Heading Only\nDescription: D\n\nbody")
+    assert named.valid and named.title == "Heading Only" and named.allowed_paths == ["./workspace/projects"]
 
 
 def test_real_arch_loads_cleanly(settings):

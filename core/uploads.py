@@ -26,6 +26,7 @@ class Attachment:
     path: Path
     size: int
     kind: str
+    saved_to: str | None = None  # Where a copy was saved in the workspace, if the user chose a folder.
 
 
 def upload_rules(permissions: PermissionManager) -> tuple[set[str], int]:
@@ -67,25 +68,28 @@ def validate_content(name: str, head: bytes) -> str:
             raise UploadRejected(f"'{name}' does not contain a valid PDF")
         return "pdf"
     lowered = name.lower()
-    if lowered.endswith((".xlsx", ".docx", ".odt")):
+    extension = lowered.rsplit(".", 1)[-1]
+    if extension in {"xlsx", "xlsm", "docx", "pptx", "odt", "ods", "odp"}:
         if not head.startswith(b"PK\x03\x04"):  # These are zip archives.
-            raise UploadRejected(f"'{name}' is not a valid {lowered.rsplit('.', 1)[-1]} file")
-        return "excel" if lowered.endswith(".xlsx") else "document"
-    if lowered.endswith(".doc"):
-        if not head.startswith(b"\xd0\xcf\x11\xe0"):  # Old Word files are OLE compound documents.
-            raise UploadRejected(f"'{name}' is not a valid Word .doc file")
-        return "document"
+            raise UploadRejected(f"'{name}' is not a valid .{extension} file")
+        return "excel" if extension in {"xlsx", "xlsm", "ods"} else "document"
+    if extension in {"doc", "xls", "ppt"}:
+        if not head.startswith(b"\xd0\xcf\x11\xe0"):  # Old Office files are OLE compound documents.
+            raise UploadRejected(f"'{name}' is not a valid .{extension} file")
+        return "excel" if extension == "xls" else "document"
+    if extension == "parquet":
+        if not head.startswith(b"PAR1"):
+            raise UploadRejected(f"'{name}' is not a valid Parquet file")
+        return "data"
     if lowered.endswith(".rtf"):
         if not head.startswith(b"{\\rtf"):
             raise UploadRejected(f"'{name}' is not a valid RTF file")
         return "document"
-    if b"\x00" in head:
+    # Text in any common encoding: UTF-8, UTF-16 (Excel "Unicode Text"), Windows-1252 (Excel CSV on Windows).
+    from .textcodec import looks_binary
+
+    if looks_binary(head):
         raise UploadRejected(f"'{name}' looks like a binary file, not text")
-    try:
-        head.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        if exc.start < len(head) - 4:  # A multibyte character cut off by the sample is fine.
-            raise UploadRejected(f"'{name}' is not valid UTF-8 text") from exc
     return "text"
 
 

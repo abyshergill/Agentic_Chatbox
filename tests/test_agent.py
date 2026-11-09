@@ -157,9 +157,9 @@ def test_slash_command_activates_skill_model_and_stays_pinned(ctx, run_chat):
     events = run_chat("/db-migration plan it")
     activation = of_type(events, "activation")[0]
     assert activation["command"] == "/db-migration" and activation["pinned"]
-    assert "database migration engineer" in ctx.ollama.calls[0]["messages"][0]["content"]
+    assert "You change database schemas safely" in ctx.ollama.calls[0]["messages"][0]["content"]
     run_chat("continue")
-    assert "database migration engineer" in ctx.ollama.calls[1]["messages"][0]["content"]
+    assert "You change database schemas safely" in ctx.ollama.calls[1]["messages"][0]["content"]
     run_chat("/auto")
     assert ctx.sessions.get("testsession01").pinned_command is None
 
@@ -247,7 +247,7 @@ def test_summary_reflects_real_outcomes(ctx, run_chat):
 def test_history_holds_only_what_was_said(ctx, run_chat):
     # A note in assistant text gets imitated: a real model faked a tool result this way.
     ctx.ollama.script = [[("list_directory", {"path": "projects/demo"})], "Listed.", "next"]
-    run_chat("list it", decide=fail_if_asked)
+    run_chat("/general list it", decide=fail_if_asked)
     run_chat("and now?", decide=fail_if_asked)
     second = ctx.ollama.calls[2]["messages"]
     assert [m["content"] for m in second if m["role"] == "assistant"] == ["Listed."]

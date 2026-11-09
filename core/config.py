@@ -26,6 +26,9 @@ class Settings:
     max_history_chars: int = 40_000
     max_search_results: int = 100
     approval_timeout_seconds: int = 900
+    # Folders the user opened in the explorer (saved in data/workspace.db). Every skill may use them, on top of its
+    # own Allowed Paths, and generated files can be saved there.
+    extra_roots: list[Path] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.base_dir = Path(self.base_dir).resolve()
@@ -55,6 +58,10 @@ class Settings:
     @property
     def uploads_dir(self) -> Path:
         return self.data_dir / "uploads"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "workspace.db"
 
     @property
     def tmp_dir(self) -> Path:

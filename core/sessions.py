@@ -1,10 +1,12 @@
-"""In-memory conversation state. Sessions last until the server restarts."""
+"""Conversation state. Live sessions are kept in memory; their messages are saved to SQLite after every turn, so
+past conversations can be reopened from History after a restart."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
+from .storage import Database
 from .uploads import Attachment
 
 SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
@@ -21,16 +23,38 @@ class Session:
 
 
 class SessionStore:
-    def __init__(self) -> None:
+    def __init__(self, db: Database | None = None) -> None:
         self._sessions: dict[str, Session] = {}
+        self.db = db
 
     def get(self, session_id: str) -> Session:
         if not SESSION_ID.match(session_id):
             raise ValueError("invalid session id")
         if session_id not in self._sessions:
-            self._sessions[session_id] = Session(id=session_id)
+            session = Session(id=session_id)
+            saved = self.db.load_chat(session_id) if self.db is not None else None
+            if saved is not None:
+                session.messages = saved["messages"]
+                session.action_log = saved["action_log"]
+                session.pinned_command = saved["pinned_command"]
+                session.active_command = saved["active_command"]
+            self._sessions[session_id] = session
         return self._sessions[session_id]
 
+    def save(self, session: Session) -> None:
+        if self.db is not None:
+            self.db.save_chat(session.id, session.messages, session.action_log,
+                              session.pinned_command, session.active_command)
+
     def reset(self, session_id: str) -> Session:
+        """Clears a conversation, in memory and on disk."""
         self._sessions.pop(session_id, None)
+        if self.db is not None:
+            self.db.delete_chat(session_id)
         return self.get(session_id)
+
+    def forget(self, session_id: str) -> None:
+        """Drops a conversation from memory and disk (History > Delete)."""
+        self._sessions.pop(session_id, None)
+        if self.db is not None:
+            self.db.delete_chat(session_id)

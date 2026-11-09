@@ -26,7 +26,7 @@ export const store = {
   },
 };
 
-function newSessionId() {
+export function newSessionId() {
   const bytes = crypto.getRandomValues(new Uint8Array(12));
   return "s" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -34,16 +34,23 @@ function newSessionId() {
 export const session = {
   id: (() => {
     try {
-      const existing = sessionStorage.getItem("workspace.session");
-      if (existing) return existing;
-      const created = newSessionId();
-      sessionStorage.setItem("workspace.session", created);
-      return created;
+      // This tab's conversation, else the last one used (so the app reopens where you left off), else a new one.
+      const existing = sessionStorage.getItem("workspace.session") || localStorage.getItem("workspace.lastSession");
+      const id = existing || newSessionId();
+      sessionStorage.setItem("workspace.session", id);
+      localStorage.setItem("workspace.lastSession", id);
+      return id;
     } catch {
       return newSessionId();
     }
   })(),
 };
+
+// Switches the page to another conversation (History) or a new one (New chat).
+export function setSessionId(id) {
+  session.id = id;
+  try { sessionStorage.setItem("workspace.session", id); localStorage.setItem("workspace.lastSession", id); } catch { /* Convenience only. */ }
+}
 
 export async function api(path, options = {}) {
   const init = { ...options };

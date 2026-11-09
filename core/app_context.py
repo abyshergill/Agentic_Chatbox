@@ -8,6 +8,7 @@ from .audit import AuditLog
 from .config import Settings
 from .models import ModelRouter
 from .sessions import SessionStore
+from .storage import Database
 from .tools import Tool, discover_tools
 
 
@@ -20,6 +21,7 @@ class AppContext:
     sessions: SessionStore = field(default_factory=SessionStore)
     approvals: dict = field(default_factory=dict)
     runs: dict = field(default_factory=dict)
+    db: Database | None = None
 
     # Older name, kept so code and tests that say ctx.ollama still work.
     @property
@@ -32,9 +34,13 @@ class AppContext:
 
     @classmethod
     def create(cls, settings: Settings) -> "AppContext":
+        db = Database(settings.db_path)
+        settings.extra_roots = [path for path in db.folders() if path.is_dir()]
         return cls(
             settings=settings,
             llm=ModelRouter(settings),
             audit=AuditLog(settings.logs_dir),
             tools=discover_tools(),
+            sessions=SessionStore(db),
+            db=db,
         )
