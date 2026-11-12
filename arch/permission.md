@@ -13,6 +13,9 @@ Fields
 The terminal also supports
   Extra Paths:     folders of tools outside the system PATH, such as ~/.cargo/bin
 
+MCP tools (#mcp) are added in Settings > Connectors. Each call needs approval unless you chose
+"Always allow" for that tool. Tools a server marks read-only use the 'read' operation, others 'call'.
+
 The web scraper also supports
   Allowed Domains: the only sites it may contact; a domain also allows its subdomains
   Render Browser:  chrome | edge, used by render_page and screenshot
@@ -129,6 +132,20 @@ Approval: required
 Name: Capabilities
 Access: enabled
 Operations: describe
+Approval: not_required
+
+## Connectors and Skills
+
+#mcp
+Name: MCP Servers (Connectors)
+Access: enabled
+Operations: read, call
+Approval: required
+
+#skills
+Name: Agent Skills
+Access: enabled
+Operations: read
 Approval: not_required
 
 ## Agent Orchestration

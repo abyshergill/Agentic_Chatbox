@@ -151,7 +151,7 @@ def test_chat_streams_events(client, ctx):
 
 
 def test_index_and_static_assets_are_served(client):
-    assert "Local AI Workspace" in client.get("/").text
+    assert "Agentic Chatbox" in client.get("/").text
     assert client.get("/static/js/main.js").status_code == 200
     assert client.get("/static/vendor/monaco/vs/loader.js").status_code == 200
     assert client.get("/static/../main.py").status_code == 404

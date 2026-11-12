@@ -1,11 +1,13 @@
 #!/bin/bash
-# Creates "Local AI Workspace.app" in ~/Applications, so the app starts from Launchpad, Spotlight or the Dock.
+# Creates "Agentic Chatbox.app" in ~/Applications, so the app starts from Launchpad, Spotlight or the Dock.
 # The bundle is a small launcher: it runs desktop.py from this project with the project's .venv,
 # so code changes apply on the next launch. Re-run this script if you move the project folder.
 set -euo pipefail
 
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$HOME/Applications/Local AI Workspace.app"
+APP="$HOME/Applications/Agentic Chatbox.app"
+OLD="$HOME/Applications/Local AI Workspace.app"  # The launcher under its previous name.
+[ -d "$OLD" ] && rm -rf "$OLD"
 PYTHON="$PROJECT/.venv/bin/python"
 
 if [ ! -x "$PYTHON" ]; then
@@ -21,9 +23,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Local AI Workspace</string>
-  <key>CFBundleDisplayName</key><string>Local AI Workspace</string>
-  <key>CFBundleIdentifier</key><string>local.ai.workspace</string>
+  <key>CFBundleName</key><string>Agentic Chatbox</string>
+  <key>CFBundleDisplayName</key><string>Agentic Chatbox</string>
+  <key>CFBundleIdentifier</key><string>local.agentic.chatbox</string>
   <key>CFBundleVersion</key><string>1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>launcher</string>

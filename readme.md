@@ -1,15 +1,27 @@
-# Agentic Chatbox V2.1
+# Agentic Chatbox V3
 
-A local AI agent workspace: chat with a model, and it reads and edits your files, runs tests and programs, and opens
-applications for you, within permissions you set. Models run on your machine through [Ollama](https://ollama.com) or
-straight from a `.gguf` file, so nothing leaves your computer. You can also add a hosted model through an API; see
-[Models](#models).
+A desktop AI assistant that runs on your computer. Chat with a local model, and it reads and edits your files, runs tests
+and programs, and uses tools from **MCP connectors** and **Agent Skills**, within permissions you set and with your
+approval. Models run on your machine through [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), or straight
+from a `.gguf` file, so nothing leaves your computer. You can also add any OpenAI-compatible API; see [Models](#models).
 
-- **Projects and data analysis:** open a project from the left bar, ask about any file, and have the Data Analyst answer
+- **Desktop chat interface:** a sidebar with your recent chats, a centered conversation with rich Markdown (tables, code
+  with copy buttons), collapsible tool steps, inline approval cards, a model picker in the message box, and light and
+  dark themes.
+- **Connectors (MCP):** add any Model Context Protocol server, local (`npx`, `uvx`, `docker`, any program) or remote
+  (Streamable HTTP or SSE). Paste a Claude Desktop config or import it in one click. See [Connectors](#connectors-mcp).
+- **Agent Skills:** folders of instructions (`SKILL.md`) the assistant loads when a task matches, in the same format as
+  Claude's skills. Create, edit, import, and switch them on and off in Settings. See [Agent Skills](#agent-skills).
+- **Any local or hosted model:** Ollama (pull and delete from the app), LM Studio (detected automatically), `.gguf` files
+  (add one, or download from a Hugging Face link), and API providers.
+- **Projects and data analysis:** open a project, ask about any file, and have the Data Analyst answer
   questions, clean and merge data, and build dashboards, Excel workbooks, and presentations from CSV, TSV, JSON, and
   Excel files. See [Working with projects and data](#working-with-projects-and-data).
-- **Three panes:** file explorer, Monaco code editor, and AI chat with live tool activity.
-- **Agents and skills in Markdown:** add one by adding files to `arch/`, with no Python changes.
+- **Generated files are links:** dashboards, PowerPoint, Word, Excel and PDF files the assistant creates appear in the
+  chat as links. Click one: dashboards open in your web browser, documents open in PowerPoint, Word, Excel, Keynote,
+  Preview and so on.
+- **Files window:** the file explorer and Monaco code editor open in their own window (⌘E), next to the chat.
+- **Agents in Markdown:** add specialist agents by adding files to `arch/`, with no Python changes.
 - **Permissions enforced in Python:** `arch/permission.md` decides what the AI can touch, and the AI cannot edit it.
 - **You approve actions:** changes wait for your approval, with a diff preview. Every request is logged.
 
@@ -17,7 +29,9 @@ straight from a `.gguf` file, so nothing leaves your computer. You can also add 
 
 - macOS or Linux (see [Security model](#security-model): command sandboxing is macOS only)
 - Python 3.11 or newer
-- A model: [Ollama](https://ollama.com), a `.gguf` file (see [Models](#models)), or an API key for a hosted model
+- A model: [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), a `.gguf` file (see [Models](#models)), or an
+  API key for a hosted model
+- Optional, for many MCP servers: [Node.js](https://nodejs.org) (`npx`) or [uv](https://docs.astral.sh/uv/) (`uvx`)
 
 ## Setup
 
@@ -42,7 +56,8 @@ version, it:
 - **Opens generated files in their own app:** click a `.pptx`, PDF, Word, Excel, or image file in the explorer (or
   its **Open** button) to open it in Keynote, PowerPoint, Preview, and so on. **Finder** shows any file in Finder.
 - **Starts Ollama** if it is installed but not running, and stops it again on exit if it started it.
-- Has a **Workspace** menu: open the workspace or logs folder, or reload the window.
+- Has **Chat** and **Workspace** menus: new chat, settings, models, connectors, skills; open the workspace, logs, or
+  skills folder; reload the window.
 - Keeps your layout between launches, and picks a free port, so it never clashes with a browser instance.
 
 To start it from Launchpad, Spotlight, or the Dock, run once:
@@ -51,18 +66,42 @@ To start it from Launchpad, Spotlight, or the Dock, run once:
 ./scripts/make_mac_app.sh
 ```
 
-This creates `~/Applications/Local AI Workspace.app`, a small launcher that runs `desktop.py` from this folder, so code
+This creates `~/Applications/Agentic Chatbox.app`, a small launcher that runs `desktop.py` from this folder, so code
 changes apply on the next launch. Run it again if you move the project. Output goes to `logs/desktop.log`.
 
 ### Browser version
 
 `python main.py` serves the same app at <http://127.0.0.1:8000> for any browser. The server only listens on this machine.
 
-Skills do not name a model. Pick one from the dropdown in the chat pane; on **Automatic**, the app uses the first
-installed model that supports tool calls. Small models make more mistakes and sometimes describe an action instead of
+Pick a model from the menu at the bottom right of the message box; on **Automatic**, the app uses the first
+installed local model that supports tool calls. Small models make more mistakes and sometimes describe an action instead of
 taking it, so pull a larger model for real work.
 
 ## Using the chat
+
+The window has three parts:
+
+- **Sidebar:** **New chat** (⌘K), **Projects & files**, **Connectors**, **Skills**, **Models**, and your recent chats,
+  grouped by day and searchable. Hover a chat to rename or delete it. Your name at the bottom opens **Settings** (⌘,).
+- **Conversation:** replies stream in, with tool calls grouped in a collapsible **Used N tools** box. Click a step to see
+  its input and result. Actions that need your approval appear inline: **Allow**, **Decline**, and for connector tools
+  **Always allow**. Hover a reply to copy it or send your message again. Click the chat title to rename it.
+- **Files window** (⌘E, **Files** in the top bar, or **Projects & files**): the explorer and the code editor in a
+  separate window. A file open there is shown to the assistant with your next message, and files the assistant changes
+  refresh there. Editing `permission.md` or `system.md` from Settings opens them in this window.
+- **Generated files:** after a reply that created files, a **Created N files** card lists them. **Open in browser**
+  opens a dashboard (`.html`) in your default browser; **Open** opens slides, documents, spreadsheets and PDFs in their
+  own app; the folder button shows the file in Finder. File paths in the reply text are clickable too, also in older
+  chats.
+
+The message box has:
+
+- **+**: upload files, add a file from your projects (or type `@`), open a folder, or turn on a skill for this message.
+- **The project button** (folder icon): the project the assistant works in and saves generated files to. Pick one of
+  your projects or opened folders, or open another folder. The Files window follows the same project.
+- **Tools** (the sliders button): switch connectors on or off for this chat, and turn on **Plan mode** or **Allow all
+  actions in \<project\>**.
+- **The model menu**, grouped by Ollama, LM Studio, GGUF files, and API providers.
 
 | You type | What happens |
 | --- | --- |
@@ -72,9 +111,11 @@ taking it, so pull a larger model for real work.
 | `#git status` | Names an operation directly, so it runs immediately without the model. |
 | `Summarise @notes.md and @report.pdf` | `@` opens a file picker. Each file you pick is read and given to the assistant with that message (folders give their file list). |
 
+| `/meeting-notes` then your text | Turns on that Agent Skill for the message; its instructions go to the assistant. |
+
 Type `/`, `#`, or `@` to see what's available.
 
-Two checkboxes above the message box change how the assistant works:
+Two modes in the **Tools** menu change how the assistant works:
 
 - **Allow all actions in \<project\>**: actions whose files are all inside the active project run without asking.
   That covers edits, new files, renames, moves to the Trash, data and document outputs, and commands. Each auto-approved
@@ -85,10 +126,10 @@ Two checkboxes above the message box change how the assistant works:
 - **Plan mode**: the assistant may only look (read files, inspect data, git status and diff) and replies with a
   numbered plan of the changes it would make. Untick it and say "go ahead" to carry the plan out.
 
-The **active project** is the top folder of whatever you last selected in the explorer or opened in the editor, shown at
-the bottom of the explorer. Files directly in `workspace/projects/` belong to `projects` itself. Under each reply, a backend-generated line shows what really ran:
-**Confirmed by the backend: 2 succeeded · 1 rejected**, or **No tools were run for this reply**. Trust that line over
-the model's wording. Models can claim things they did not do.
+The **active project** is chosen with the project button in the message box, or by selecting a folder or file in the
+Files window, and is shown at the bottom of the explorer. Files directly in `workspace/projects/` belong to `projects` itself. Under each reply, a
+backend-generated line shows what really ran, for example **2 actions: 1 done, 1 declined**, or **No tools used**. Trust
+that line over the model's wording. Models can claim things they did not do.
 
 Try it with the bundled project in `workspace/projects/sample_app`. Put your own projects in `workspace/projects/`.
 
@@ -192,17 +233,76 @@ that look (list, read, search, git status and diff).
   folders, file-type and size limits, and which limits are deliberate. For a project, it reads the code to find the
   missing feature, hard-coded limit, or failing check, and cites the file and line.
 
+## Connectors (MCP)
+
+Connectors are [Model Context Protocol](https://modelcontextprotocol.io) servers. Each one gives the assistant new tools:
+files, databases, issue trackers, browsers, search, memory, and more. Manage them in **Settings › Connectors**:
+
+- **Add connector:** a name plus either a **command** (a local server: `npx`, `uvx`, `docker`, `python`, or a full path,
+  with arguments, environment variables such as API tokens, and an optional working folder) or a **URL** (a remote
+  server, over Streamable HTTP or SSE, with optional headers such as `Authorization`).
+- **Popular servers:** one click fills in Filesystem, Memory, Sequential thinking, Fetch, Git, Time, or the Everything
+  demo server.
+- **Paste JSON config:** the `{"mcpServers": {...}}` format that Claude Desktop, Cursor, and most server READMEs use.
+- **Import from Claude Desktop:** shown when `claude_desktop_config.json` exists; copies its servers.
+
+Each connector shows its status, its tools, and its log. Switch one off without deleting it, reconnect it, or edit it.
+Saved servers start with the app. The desktop app finds `npx`, `uvx`, and friends in the usual install folders
+(Homebrew, nvm, `~/.local/bin`, `~/.cargo/bin`), even when started from the Dock.
+
+**Using them:** connector tools are offered to every agent, named `mcp_<server>_<tool>`. In the message box's **Tools**
+menu you can switch a connector off for the current chat. Every call asks for your approval, showing the exact input,
+unless you choose **Always allow** for that tool, from the approval card or in Settings. Plan mode and read-only agents
+only get tools the server marks read-only. To turn connectors off everywhere, set `Access: disabled` under `#mcp` in
+`arch/permission.md`.
+
+The configuration is saved in `data/mcp.json` (mode 600, git-ignored). Tokens in environment variables and headers are
+never sent back to the page. Logs from local servers go to `logs/mcp-<name>.log`.
+
+## Agent Skills
+
+A skill is a folder in `skills/` with a `SKILL.md`: a short front matter, then Markdown instructions. It can hold extra
+files (references, templates, examples) that the instructions point to.
+
+```markdown
+---
+name: weekly-report
+description: Write the weekly status report from my notes. Use when the user asks for a weekly report or status update.
+---
+
+# Weekly report
+
+1. Read the notes the user gives or points to.
+2. Write the report in this format: …
+```
+
+Every conversation sees each enabled skill's name and description. When a request matches, the assistant calls
+`use_skill` to load the full instructions, and `read_skill_file` for the extra files. You can also turn a skill on for one
+message from the **+** menu or by typing `/` and its name; its instructions then go straight to the model.
+
+In **Settings › Skills** you can create and edit skills, switch them on and off, delete them (to the Trash), and import a
+`.zip` or a folder. The format is the same as Claude's Agent Skills, so existing skills work as they are. Four starter
+skills are included: `meeting-notes`, `code-review`, `data-report`, and `skill-creator`. The assistant can read
+`skills/` but never change it.
+
+Agent Skills are different from the **agents** in `arch/` (see [Configuration](#configuration)): an agent decides
+*which tools and folders* the assistant may use; a skill tells it *how* to do a kind of task.
+
 ## Models
 
-Pick a model in the chat pane's **Model** menu, grouped by source. Manage sources with **Models** in the header.
-**Automatic (local)** uses a model on your computer and never picks a remote one.
+Pick a model from the menu in the message box, grouped by source. Manage sources in **Settings › Models**.
+**Automatic** uses a model on your computer and never picks a remote one.
 
 | Source | How to add it | Data leaves your computer? |
 | --- | --- | --- |
-| Ollama | `ollama pull <model>`. It appears automatically | No |
-| `.gguf` file | **Models > Choose .gguf file…** (desktop app), paste its path, or drop it into `models/` | No |
-| API on this computer (LM Studio, vLLM, llama.cpp server) | **Models > Add API provider**, address `http://127.0.0.1:…/v1` | No |
-| Hosted API (OpenAI, Anthropic, Gemini, Groq, OpenRouter, Mistral, DeepSeek, any OpenAI-compatible service) | **Models > Add API provider**: pick a preset, paste your key, then **Find models** | **Yes**, marked *remote* |
+| Ollama | **Settings › Models › Pull** (or `ollama pull <model>`). Delete models there too | No |
+| LM Studio | Start its local server (Developer › Start Server). Its models appear automatically | No |
+| `.gguf` file | **Settings › Models**: browse (desktop app) or paste a path, **download from a link** (Hugging Face page links work), or drop it into `models/` | No |
+| Other API on this computer (vLLM, llama.cpp server) | **Settings › Models › Add a provider**, address `http://127.0.0.1:…/v1` | No |
+| Hosted API (OpenAI, Anthropic, Gemini, Groq, OpenRouter, Mistral, DeepSeek, any OpenAI-compatible service) | **Settings › Models › Add a provider**: pick a preset, paste your key, then **Find models** | **Yes**, marked *remote* |
+
+LM Studio is looked for at `http://127.0.0.1:1234/v1`; change it with `WORKSPACE_LMSTUDIO_URL`, or stop looking with
+`WORKSPACE_DETECT_LOCAL=0`. Downloads and pulls show their progress in Settings and can be cancelled.
 
 **`.gguf` files** run with llama.cpp in a private server on `127.0.0.1` that the app starts when you first send a
 message and stops when you pick another file, click **Unload**, or quit. It needs one llama.cpp runtime:
@@ -224,7 +324,9 @@ raw JSON instead of acting, edit the provider and turn off **native tool calling
 
 ## Configuration
 
-Everything is in `arch/`. Files are re-read on each request, so edits apply without a restart. The explorer shows
+Agents and permissions are in `arch/`. Files are re-read on each request, so edits apply without a restart.
+**Settings › Agents & permissions** shows what is allowed and opens these files in the editor. Your name and **custom
+instructions** for every chat are in **Settings › General**. The explorer shows
 `arch/` at the bottom (**arch · agents & skills**), so you can open and edit any agent or skill right in the app. The
 assistant's own tools still cannot read or change it.
 
@@ -251,7 +353,7 @@ skill's instructions. A skill missing a title or description is listed as a warn
 | `Title:` | yes | `Name:` or the `# Heading` also work |
 | `Description:` | yes | Also used to route plain messages to the skill |
 | `Allowed Paths:` | no | Comma separated. Default: `./workspace/projects` |
-| `Model:` | no | Pins a model; otherwise the one picked in the chat pane is used |
+| `Model:` | no | Pins a model; otherwise the one picked in the message box is used |
 
 ```
 # Database Migration
@@ -317,9 +419,9 @@ name, and relative paths such as `orders.csv` or `data/orders.csv` are looked up
 
 ### Chat history
 
-Conversations are saved to SQLite in `data/workspace.db` after every reply. **History** in the chat pane lists them:
-click one to continue it, or rename or delete it. **New chat** starts a fresh conversation and keeps the old one in
-History. The app reopens your last conversation when it starts.
+Conversations are saved to SQLite in `data/workspace.db` after every reply. The sidebar lists them under **Recents**,
+grouped by day: click one to continue it, hover it to rename or delete it, or search them. **New chat** (⌘K) starts a
+fresh conversation. The app reopens your last conversation when it starts.
 
 ### Changing permissions
 
@@ -369,6 +471,8 @@ Add a module to `core/adapters/` that defines `adapter = Adapter(app_id=..., too
 | `#vscode` | `open_project`, `open_file` (offered when you use `#vscode` or mention VS Code) |
 | `#browser` | `open_url` (disabled by default; offered when you use `#browser` or mention a browser) |
 | `#delegate` | `delegate_task`: hands work to another skill, under that skill's permissions |
+| `#skills` | `use_skill`, `read_skill_file`: load an Agent Skill's instructions and files (read-only) |
+| `#mcp` | Every tool of every connected MCP server, as `mcp_<server>_<tool>` |
 
 `#system` (shutdown, restart, install package) is defined in `permission.md` but disabled and has no integration on
 purpose. Enabling it does nothing until someone writes an adapter.
@@ -391,12 +495,15 @@ These checks run in Python on every action, whatever the model says:
 - **Uploads:** extension, content, and size are checked. Files are stored outside the workspace, without execute
   permission.
 - **Models:** the `.gguf` server listens only on `127.0.0.1`. API keys stay in `data/models.json`, outside every folder
-  the assistant can reach. A remote model is used only when you choose it.
+  the assistant can reach. A remote model is used only when you choose it. `.gguf` downloads must use `https://` and are
+  checked to be GGUF files before they are kept.
+- **Connectors:** only you can add or change MCP servers (the assistant has no tool for it), and each tool call needs
+  your approval unless you chose **Always allow** for it. Tool results are treated as data, not instructions.
 
 ### Known limits
 
 - **Linux has no OS sandbox.** The other checks still apply, but an approved Python script or test run has your user's
-  full rights. The header shows **No sandbox**. On Linux, read scripts carefully before approving them.
+  full rights. Hover your name in the sidebar to see whether commands run sandboxed. On Linux, read scripts carefully before approving them.
 - **Approved code is real code.** On macOS the sandbox contains it, but it can still change or delete anything inside the
   skill's folders. Keep your projects in version control.
 - **Secret detection works on patterns.** Unusual file names or credential formats can get through, so don't keep
@@ -404,15 +511,16 @@ These checks run in Python on every action, whatever the model says:
 - **`#vscode` and `#browser` run outside the sandbox,** because desktop apps can't start inside it. They only receive a
   validated path or `http(s)` URL.
 - **The redactor can show `[REDACTED]` in text the model reads.** It only affects what the model sees, not your files.
-- **Conversations are kept in memory** and are lost when the server restarts. Uploaded files and the audit log remain.
+- **MCP servers run with your user's rights.** A local server is a program you chose to run, outside the sandbox, and
+  can reach the network. Add only servers you trust, and prefer **Allow once** for tools that change things.
 - **A hosted API model sees what the assistant sees.** Redaction removes credential-shaped text, but file contents and
   your messages go to that provider. Use a local model for confidential data.
 
 ## Audit log
 
 Every tool request is appended to `logs/audit.jsonl`, whether it ran or not, with the time, session, agent, skill, model,
-operation, target, permission decision, approval status, outcome, and result. The **Audit history** tab shows the current
-conversation.
+operation, target, permission decision, approval status, outcome, and result. **Settings › Activity** shows the live log
+and the current chat's audit history.
 
 ## Development
 
@@ -425,8 +533,9 @@ Tests use a scripted model and a temporary copy of `arch/`, so they need neither
 
 ### Rebuilding styles
 
-Monaco and the compiled CSS are committed, so the app needs no internet or Node to run. To change styles, edit
-`static/css/input.css` or use new Tailwind classes, then rebuild:
+Monaco and the compiled CSS are committed, so the app needs no internet or Node to run. The chat interface is styled by
+plain CSS in `static/css/desktop.css` (colors are variables at the top, for light and dark). The explorer and editor
+panel use Tailwind: to change those, edit `static/css/input.css` or use new Tailwind classes, then rebuild:
 
 ```bash
 npx tailwindcss@3.4.17 -c tailwind.config.js -i static/css/input.css -o static/css/app.css --minify
@@ -440,6 +549,10 @@ desktop.py           Native desktop window around the same app
 index.html           The interface
 core/
 ├── agent.py         Agent loop; the only path to running a tool
+├── mcp_hub.py       Connectors: MCP server connections and their tools
+├── agent_skills.py  Agent Skills: SKILL.md folders, import, and the skills catalog
+├── downloads.py     .gguf downloads and Ollama pulls
+├── preferences.py   Your name and custom instructions
 ├── arch_loader.py   Parses agents, skills, and commands
 ├── permissions.py   Parses permission.md and makes decisions
 ├── dataviz.py       Data loading, statistics, and SVG charts and dashboards
@@ -449,7 +562,7 @@ core/
 ├── process.py       Sandboxed process runner
 ├── ollama_client.py Ollama streaming and tool-call parsing
 ├── openai_client.py OpenAI-compatible APIs (hosted providers and the .gguf server)
-├── models.py        Model router: Ollama, .gguf files (llama.cpp), API providers
+├── models.py        Model router: Ollama, LM Studio, .gguf files (llama.cpp), API providers
 ├── datatools.py     Clean, transform, merge, and convert data; safe formulas
 ├── excel.py         Excel workbooks: exports and formatted reports
 ├── documents.py     Reads PDF, Word, Excel, HTML as text; writes Word documents
@@ -460,7 +573,8 @@ core/
 ├── audit.py         Audit log
 └── adapters/        One module per integration
 static/              JavaScript, CSS, and bundled Monaco
-arch/                Your configuration
+skills/              Agent Skills (SKILL.md folders)
+arch/                Agents and permissions
 workspace/projects/  Where your projects live
 tests/               Test suite
 ```

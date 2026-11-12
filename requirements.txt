@@ -13,3 +13,5 @@ python-docx>=1.1,<2
 xlrd>=2.0,<3
 odfpy>=1.4,<2
 pyarrow>=15
+# Connectors: the official Model Context Protocol SDK (stdio, Streamable HTTP and SSE servers).
+mcp>=2.3,<3

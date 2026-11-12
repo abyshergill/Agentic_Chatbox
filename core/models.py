@@ -1,9 +1,10 @@
 """Every model the app can use, behind one interface the agent already speaks.
 
-Three kinds, told apart by the model id:
+Four kinds, told apart by the model id:
 - Ollama models, by their Ollama name ('qwen2.5-coder:3b').
 - .gguf files run directly with llama.cpp, no Ollama needed ('gguf:<file name>'). The app starts a private llama.cpp
   server on 127.0.0.1 for the selected file and stops it when another file is chosen or the app quits.
+- LM Studio models ('lmstudio:<model>'), listed automatically while LM Studio's local server runs.
 - Models from an OpenAI-compatible API ('api:<provider>:<model>'), local (LM Studio, vLLM) or hosted (OpenAI,
   Anthropic, Gemini, Groq, OpenRouter...). Hosted models are *remote*: the conversation, including file contents the
   assistant reads, is sent to that provider. They are never chosen automatically.
@@ -285,7 +286,7 @@ class GgufRuntime:
 class ModelEntry:
     id: str
     label: str
-    kind: str  # ollama | gguf | api
+    kind: str  # ollama | gguf | lmstudio | api
     remote: bool = False
     detail: str = ""
     path: Path | None = None
@@ -302,6 +303,24 @@ class ModelRouter:
         self.store = ModelStore(settings.data_dir / "models.json")
         self.gguf = GgufRuntime(settings)
         self.ollama_error: str | None = None
+        self._lmstudio: tuple[float, list[str]] = (0.0, [])
+        self.lmstudio_running = False
+
+    async def lmstudio_models(self) -> list[str]:
+        """Models loaded in or downloaded to LM Studio, while its server runs. Cached for a few seconds."""
+        if not self.settings.detect_local_servers:
+            return []
+        stamp, models = self._lmstudio
+        if time.monotonic() - stamp < 5:
+            return models
+        try:
+            found = await OpenAICompatibleClient(self.settings.lmstudio_url, label="LM Studio").list_models()
+            models = [m for m in found if "embed" not in m.lower()]
+            self.lmstudio_running = True
+        except Exception:  # noqa: BLE001 - not running is the normal case.
+            models, self.lmstudio_running = [], False
+        self._lmstudio = (time.monotonic(), models)
+        return models
 
     @property
     def models_dir(self) -> Path:
@@ -324,6 +343,8 @@ class ModelRouter:
             self.ollama_error = None
         except OllamaError as exc:
             self.ollama_error = str(exc)
+        entries += [ModelEntry(f"lmstudio:{name}", name, "lmstudio", detail="LM Studio", model=name)
+                    for name in await self.lmstudio_models()]
         seen: set[str] = set()
         for file in self.gguf_files():
             model_id = f"gguf:{file.name}" if f"gguf:{file.name}" not in seen else f"gguf:{file.parent.name}/{file.name}"
@@ -337,7 +358,7 @@ class ModelRouter:
         return entries
 
     async def _entry(self, model_id: str) -> ModelEntry | None:
-        if not model_id.startswith(("gguf:", "api:")):
+        if not model_id.startswith(("gguf:", "api:", "lmstudio:")):
             return None
         return next((e for e in await self.catalog() if e.id == model_id), None)
 
@@ -346,7 +367,7 @@ class ModelRouter:
         if not entries:
             raise OllamaError(
                 "No models are available. Start Ollama (ollama serve), add a .gguf file, or add an API model "
-                "in the Models dialog.")
+                "in Settings > Models.")
         return [entry.id for entry in entries]
 
     async def is_remote(self, model_id: str) -> bool:
@@ -359,12 +380,17 @@ class ModelRouter:
         if model.startswith("api:"):
             entry = await self._entry(model)
             return bool(entry and entry.provider.get("native_tools", True))
+        if model.startswith("lmstudio:"):
+            return True  # LM Studio's server accepts tools and falls back to prompting for models without support.
         return await self.ollama.supports_tools(model)
 
     async def chat(self, model: str, messages: list[dict], tools: list[dict] | None, allowed_tools: set[str],
                    on_token: Callable[[str], Awaitable[None]]) -> ChatTurn:
-        if not model.startswith(("gguf:", "api:")):
+        if not model.startswith(("gguf:", "api:", "lmstudio:")):
             return await self.ollama.chat(model, messages, tools, allowed_tools, on_token)
+        if model.startswith("lmstudio:"):
+            client = OpenAICompatibleClient(self.settings.lmstudio_url, label="LM Studio")
+            return await client.chat(model.split(":", 1)[1], messages, tools, allowed_tools, on_token)
         entry = await self._entry(model)
         if entry is None:
             raise ModelError(f"Model '{model}' is no longer configured. Pick another in the Model menu.")

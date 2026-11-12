@@ -38,6 +38,12 @@ class FakeOllama:
 
 
 @pytest.fixture(autouse=True)
+def no_local_server_probing(monkeypatch):
+    """Tests never look for a real LM Studio on this machine; tests that need it opt in."""
+    monkeypatch.setenv("WORKSPACE_DETECT_LOCAL", "0")
+
+
+@pytest.fixture(autouse=True)
 def no_real_trash(monkeypatch):
     """Tests never touch the real Trash: 'moving to Trash' just removes the temporary file."""
     import os

@@ -655,7 +655,7 @@ function menuItems(path) {
       ["New File…", "", () => startCreate("file", path)], ["New Folder…", "", () => startCreate("folder", path)],
       ["Upload Files…", "", () => uploadInto(path)],
       ...(projectOf(path) ? [["Save Generated Files Here", "", () => useAsOutput(path)]] : []),
-      ...(desktop ? [["Reveal in Finder", "", () => revealNative(path)]] : []),
+      ["Reveal in Finder", "", () => revealNative(path)],
       ...(isTop && entry.root === "folder" ? ["-", ["Remove Folder from Explorer", "", () => removeOpened(path)]] : []),
       ...common,
     ];
@@ -664,7 +664,7 @@ function menuItems(path) {
     ["Open", "", () => openEntry(entry), !many],
     ...(opensNatively(path) ? [["Open in Default App", "", () => openNative(path)]] : []),
     ...(isDashboard(path) ? [["Open in Editor", "", () => emit("open-file", path)]] : []),
-    ...(desktop ? [["Reveal in Finder", "", () => revealNative(path)]] : []),
+    ["Reveal in Finder", "", () => revealNative(path)],
     ["Ask Assistant About This File", "", () => emit("ask-file", path), !many],
     ...common,
   ];

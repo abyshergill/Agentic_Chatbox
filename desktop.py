@@ -1,4 +1,4 @@
-"""Local AI Workspace as a desktop application. Run with `python desktop.py`.
+"""Agentic Chatbox as a desktop application. Run with `python desktop.py`.
 
 The same app as `python main.py`, shown in its own native window (macOS WebKit, Windows Edge WebView2, or GTK/Qt on
 Linux) instead of a browser tab. The server still listens only on 127.0.0.1, on a free port picked at launch.
@@ -21,6 +21,9 @@ import threading
 import time
 from pathlib import Path
 
+import json
+from urllib.parse import urlencode
+
 import httpx
 import uvicorn
 import webview
@@ -28,13 +31,9 @@ from webview.menu import Menu, MenuAction, MenuSeparator
 
 from main import app
 
-TITLE = "Local AI Workspace"
+TITLE = "Agentic Chatbox"
 SETTINGS = app.state.ctx.settings
-# Files the desktop may hand to their default app. Nothing here can execute code when opened.
-OPENABLE = {
-    ".pptx", ".ppt", ".key", ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".numbers", ".pages", ".odt", ".ods", ".odp",
-    ".csv", ".tsv", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".txt", ".md",
-}
+from core.launcher import OPENABLE  # Files the desktop may hand to their default app.
 OLLAMA_PATHS = ("/opt/homebrew/bin/ollama", "/usr/local/bin/ollama", "/Applications/Ollama.app/Contents/Resources/ollama")
 
 
@@ -98,8 +97,66 @@ def _launch(args: list[str]) -> None:
         subprocess.Popen(["xdg-open", args[-1]])
 
 
+# The chat window's address, and the Files window while it is open.
+WINDOWS: dict = {"url": "", "files": None, "main": None}
+
+
+def _bring_to_front(window) -> None:
+    window.restore()
+    window.show()
+    window.on_top = True  # pywebview has no focus(); toggling "always on top" raises the window.
+    window.on_top = False
+
+
 class DesktopApi:
     """Methods callable from the page. Each returns True, or a message the UI can show."""
+
+    def open_files_window(self, path: str | None = None):
+        """Opens (or brings forward) the Files window: explorer and editor, beside the chat."""
+        files = WINDOWS["files"]
+        if files is not None:
+            _bring_to_front(files)
+            if path:
+                message = json.dumps({"type": "open-file", "path": str(path), "id": f"py-{time.time_ns()}"})
+                files.evaluate_js(f"window.__fromApp && window.__fromApp({message})")
+            return True
+        query = f"?{urlencode({'open': path})}" if path else ""
+        files = webview.create_window(
+            f"Files · {TITLE}", f"{WINDOWS['url']}workspace{query}", js_api=self, width=1280, height=860,
+            min_size=(700, 480), text_select=True, background_color="#faf9f5",
+        )
+        WINDOWS["files"] = files
+
+        def closed():
+            WINDOWS["files"] = None
+
+        files.events.closed += closed
+        return True
+
+    def focus_chat(self):
+        if WINDOWS["main"] is not None:
+            _bring_to_front(WINDOWS["main"])
+        return True
+
+    def relay(self, message: str):
+        """Passes a message from one window to the others (open this file, files changed, project chosen...)."""
+        try:
+            data = json.loads(message)
+        except (TypeError, json.JSONDecodeError):
+            return "invalid message"
+        if not isinstance(data, dict) or not isinstance(data.get("type"), str):
+            return "invalid message"
+        payload = json.dumps(data)  # Re-encoded, so only JSON reaches evaluate_js.
+
+        def deliver():
+            for window in list(webview.windows):
+                try:
+                    window.evaluate_js(f"window.__fromApp && window.__fromApp({payload})")
+                except Exception:  # noqa: BLE001 - a window closing mid-delivery is fine.
+                    pass
+
+        threading.Thread(target=deliver, daemon=True).start()
+        return True
 
     def open_path(self, path: str):
         try:
@@ -153,6 +210,7 @@ def main() -> None:
     port = free_port()
     SETTINGS.port = port
     url = f"http://127.0.0.1:{port}/"
+    WINDOWS["url"] = url
     ollama = start_ollama()
 
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
@@ -167,9 +225,15 @@ def main() -> None:
 
     print(f"{TITLE}: desktop window on {url}", flush=True)
     window = webview.create_window(
-        TITLE, url, js_api=DesktopApi(), width=1440, height=900, min_size=(1000, 640), text_select=True,
-        background_color="#14171b",
+        TITLE, url, js_api=DesktopApi(), width=1440, height=920, min_size=(900, 600), text_select=True,
+        background_color="#faf9f5",
     )
+    WINDOWS["main"] = window
+    # The page asks the server to open the Files window, so it works even before the JavaScript bridge is ready.
+    app.state.open_files_window = lambda path: DesktopApi().open_files_window(path)
+
+    def click(element_id: str):
+        window.evaluate_js(f"document.getElementById({element_id!r})?.click()")
 
     def open_workspace():
         _launch([str(SETTINGS.workspace_root)])
@@ -178,9 +242,22 @@ def main() -> None:
         _launch([str(SETTINGS.logs_dir)])
 
     menu = [
+        Menu("Chat", [
+            MenuAction("New Chat", lambda: click("new-chat")),
+            MenuAction("Files Window", lambda: DesktopApi().open_files_window()),
+            MenuAction("Show or Hide Sidebar", lambda: window.evaluate_js(
+                "document.getElementById('app').classList.contains('sidebar-collapsed')"
+                " ? document.getElementById('show-sidebar').click() : document.getElementById('collapse-sidebar').click()")),
+            MenuSeparator(),
+            MenuAction("Settings…", lambda: click("open-settings")),
+            MenuAction("Models…", lambda: click("nav-models")),
+            MenuAction("Connectors…", lambda: click("nav-connectors")),
+            MenuAction("Skills…", lambda: click("nav-skills")),
+        ]),
         Menu("Workspace", [
             MenuAction("Open Workspace Folder", open_workspace),
             MenuAction("Open Logs Folder", open_logs),
+            MenuAction("Open Skills Folder", lambda: _launch([str(SETTINGS.skills_dir)])),
             MenuSeparator(),
             MenuAction("Reload", lambda: window.evaluate_js("location.reload()")),
         ]),

@@ -49,7 +49,7 @@ class Agent:
 
 @dataclass
 class SystemConfig:
-    name: str = "Local AI Workspace"
+    name: str = "Agentic Chatbox"
     default_skill: str = ""
     max_iterations: int = 12
     prompt: str = ""

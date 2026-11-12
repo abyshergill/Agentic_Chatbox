@@ -1,1 +1,1 @@
-"""Backend for the Local AI Workspace."""
+"""Backend for Agentic Chatbox."""

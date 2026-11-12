@@ -1,4 +1,4 @@
-"""Local AI Workspace: FastAPI entry point. Run with `python main.py`."""
+"""Agentic Chatbox: FastAPI entry point. Run with `python main.py` (browser) or `python desktop.py` (desktop app)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import re
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -52,6 +52,54 @@ class ChatRequest(BaseModel):
     auto_approve: str | None = Field(default=None, max_length=500)
     context_files: list[str] = Field(default_factory=list, max_length=6)
     plan_only: bool = False
+    skills: list[str] = Field(default_factory=list, max_length=10)
+    mcp_servers: list[str] | None = Field(default=None, max_length=100)
+
+
+class McpServerRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=48)
+    original: str | None = Field(default=None, max_length=48)
+    config: dict
+
+
+class McpImportRequest(BaseModel):
+    config: dict | None = None
+    from_claude_desktop: bool = False
+    replace: bool = False
+
+
+class McpToggleRequest(BaseModel):
+    enabled: bool
+
+
+class McpAllowRequest(BaseModel):
+    tool: str = Field(min_length=1, max_length=200)
+    allowed: bool = True
+
+
+class SkillRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    original: str | None = Field(default=None, max_length=64)
+    description: str = Field(min_length=1, max_length=1024)
+    body: str = Field(default="", max_length=200_000)
+
+
+class SkillImportRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1000)
+    replace: bool = False
+
+
+class PreferencesRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=60)
+    custom_instructions: str | None = Field(default=None, max_length=8000)
+
+
+class DownloadRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2000)
+
+
+class OllamaModelRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
 
 
 class SessionRequest(BaseModel):
@@ -103,6 +151,17 @@ class GgufRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1000)
 
 
+class OpenRequest(BaseModel):
+    session_id: str
+    path: str = Field(min_length=1, max_length=1000)
+    reveal: bool = False  # Show it in Finder instead of opening it.
+    base: str | None = Field(default=None, max_length=1000)  # The active project, for paths relative to it.
+
+
+class FilesWindowRequest(BaseModel):
+    path: str | None = Field(default=None, max_length=1000)  # A file to open in it.
+
+
 class CopyRequest(BaseModel):
     session_id: str
     path: str = Field(min_length=1, max_length=500)
@@ -152,11 +211,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # Connectors start in the background, so a slow server never delays the window.
+        startup = asyncio.create_task(ctx.mcp.start_all()) if ctx.mcp is not None else None
         yield
+        if startup is not None and not startup.done():
+            startup.cancel()
+        if ctx.mcp is not None:
+            await ctx.mcp.stop_all()
         if hasattr(ctx.llm, "shutdown"):
             ctx.llm.shutdown()  # Stops the llama.cpp server for .gguf models.
 
-    app = FastAPI(title="Local AI Workspace", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app = FastAPI(title="Agentic Chatbox", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.ctx = ctx
 
     @app.middleware("http")
@@ -228,6 +293,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if hasattr(ctx.llm, "catalog"):
             catalog = [{"id": e.id, "label": e.label, "kind": e.kind, "remote": e.remote} for e in await ctx.llm.catalog()]
             ollama["ollama_error"] = ctx.llm.ollama_error
+        connectors = ctx.mcp.status() if ctx.mcp is not None else []
         return {
             "status": "ok",
             "name": registry.system.name,
@@ -235,6 +301,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "catalog": catalog,
             "isolation": isolation_mode(),
             "warnings": registry.warnings + perms.warnings,
+            "connectors": [{"name": c["name"], "status": c["status"], "tools": len(c["tools"])} for c in connectors],
+            "skills": len(ctx.skills.active()) if ctx.skills is not None else 0,
         }
 
     # ---- models: Ollama, .gguf files, API providers ---------------------------------
@@ -252,7 +320,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "models_dir": str(ctx.llm.models_dir),
             "runtime": ctx.llm.gguf.status(),
             "ollama_error": ctx.llm.ollama_error,
+            "ollama_url": settings.ollama_url,
+            "lmstudio": {"running": getattr(ctx.llm, "lmstudio_running", False), "url": settings.lmstudio_url},
             "presets": PRESETS,
+            "downloads": ctx.downloads.jobs() if ctx.downloads is not None else [],
         }
 
     def is_local(url: str) -> bool:
@@ -321,6 +392,232 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ctx.llm.gguf.stop()
         return model_settings()
 
+    @app.get("/api/models/ollama")
+    async def ollama_models():
+        """Installed Ollama models with their sizes, for Settings > Models."""
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5) as http:
+                response = await http.get(f"{settings.ollama_url}/api/tags")
+            models = response.json().get("models", [])
+        except (httpx.HTTPError, ValueError):
+            return {"running": False, "models": []}
+        return {"running": True, "models": [
+            {"name": m.get("name"), "size_gb": round((m.get("size") or 0) / 1e9, 1),
+             "family": (m.get("details") or {}).get("family", ""),
+             "parameters": (m.get("details") or {}).get("parameter_size", ""),
+             "quantization": (m.get("details") or {}).get("quantization_level", "")} for m in models]}
+
+    @app.post("/api/models/ollama/pull")
+    async def ollama_pull(body: OllamaModelRequest):
+        try:
+            job = ctx.downloads.pull_ollama(body.name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        ctx.audit.record(session_id="-", agent="user", skill="-", model="-", operation="ui_ollama_pull",
+                         target=body.name, permission="allowed", approval="user_action", status="success", result="started")
+        return job.public()
+
+    @app.post("/api/models/ollama/delete")
+    async def ollama_delete(body: OllamaModelRequest):
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                response = await http.request("DELETE", f"{settings.ollama_url}/api/delete", json={"model": body.name})
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Ollama is not reachable: {exc}") from exc
+        if response.status_code != 200:
+            raise HTTPException(400, f"Ollama could not delete {body.name}: {response.text[:200]}")
+        ctx.audit.record(session_id="-", agent="user", skill="-", model="-", operation="ui_ollama_delete",
+                         target=body.name, permission="allowed", approval="user_action", status="success", result="deleted")
+        return {"deleted": True}
+
+    @app.post("/api/models/download")
+    async def download_model(body: DownloadRequest):
+        """Downloads a .gguf file from a link (e.g. Hugging Face) into models/."""
+        try:
+            job = ctx.downloads.download_gguf(body.url)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        ctx.audit.record(session_id="-", agent="user", skill="-", model="-", operation="ui_gguf_download",
+                         target=job.source, permission="allowed", approval="user_action", status="success", result="started")
+        return job.public()
+
+    @app.get("/api/models/downloads")
+    async def list_downloads():
+        return {"jobs": ctx.downloads.jobs()}
+
+    @app.post("/api/models/downloads/{job_id}/cancel")
+    async def cancel_download(job_id: str):
+        return {"cancelled": ctx.downloads.cancel(job_id)}
+
+    @app.post("/api/models/downloads/clear")
+    async def clear_downloads():
+        ctx.downloads.clear_finished()
+        return {"jobs": ctx.downloads.jobs()}
+
+    # ---- connectors: MCP servers ----------------------------------------------------
+    # Only the user's interface reaches these. Secrets in env and headers are never sent back to the page.
+
+    def audit_settings(operation: str, target: str, result: str) -> None:
+        ctx.audit.record(session_id="-", agent="user", skill="-", model="-", operation=operation, target=target,
+                         permission="allowed", approval="user_action", status="success", result=result)
+
+    @app.get("/api/mcp")
+    async def mcp_status():
+        from core.mcp_hub import claude_desktop_config_path
+        return {"servers": ctx.mcp.status(), "claude_desktop_config": claude_desktop_config_path().is_file()}
+
+    @app.get("/api/mcp/servers/{name}")
+    async def mcp_server(name: str):
+        config = ctx.mcp.raw_config(name)
+        if config is None:
+            raise HTTPException(404, "No such server.")
+        masked = json.loads(json.dumps(config))
+        for key in ("env", "headers"):
+            if isinstance(masked.get(key), dict):
+                masked[key] = {k: mask(str(v)) for k, v in masked[key].items()}
+        connection = ctx.mcp.connections.get(name)
+        return {"name": name, "config": masked, "log": connection.log_tail() if connection else ""}
+
+    @app.post("/api/mcp/servers")
+    async def save_mcp_server(body: McpServerRequest):
+        config = dict(body.config)
+        previous = ctx.mcp.raw_config(body.original or body.name) or {}
+        # Masked values coming back from the form mean "keep what is saved".
+        for key in ("env", "headers"):
+            if isinstance(config.get(key), dict):
+                kept = previous.get(key) or {}
+                config[key] = {k: (kept.get(k, "") if str(v).startswith("••••••") else v) for k, v in config[key].items()}
+        try:
+            await ctx.mcp.save_server(body.name.strip(), config, body.original)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        audit_settings("ui_mcp_save", body.name, "saved")
+        return {"servers": ctx.mcp.status()}
+
+    @app.post("/api/mcp/import")
+    async def import_mcp(body: McpImportRequest):
+        from core.mcp_hub import claude_desktop_config_path
+        source = body.config
+        if body.from_claude_desktop:
+            try:
+                source = json.loads(claude_desktop_config_path().read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise HTTPException(404, f"Could not read Claude Desktop's config: {exc}") from exc
+        if not source:
+            raise HTTPException(400, "Nothing to import.")
+        try:
+            added = await ctx.mcp.import_servers(source, body.replace)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        audit_settings("ui_mcp_import", ", ".join(added) or "-", f"imported {len(added)}")
+        return {"added": added, "servers": ctx.mcp.status()}
+
+    @app.post("/api/mcp/servers/{name}/toggle")
+    async def toggle_mcp(name: str, body: McpToggleRequest):
+        try:
+            await ctx.mcp.set_enabled(name, body.enabled)
+        except KeyError as exc:
+            raise HTTPException(404, "No such server.") from exc
+        audit_settings("ui_mcp_toggle", name, "enabled" if body.enabled else "disabled")
+        return {"servers": ctx.mcp.status()}
+
+    @app.post("/api/mcp/servers/{name}/restart")
+    async def restart_mcp(name: str):
+        try:
+            await ctx.mcp.connect(name)
+        except KeyError as exc:
+            raise HTTPException(404, "No such server.") from exc
+        return {"servers": ctx.mcp.status()}
+
+    @app.post("/api/mcp/servers/{name}/always-allow")
+    async def always_allow_mcp(name: str, body: McpAllowRequest):
+        try:
+            ctx.mcp.set_always_allow(name, body.tool, body.allowed)
+        except KeyError as exc:
+            raise HTTPException(404, "No such server.") from exc
+        audit_settings("ui_mcp_always_allow", f"{name}/{body.tool}", "always allow" if body.allowed else "ask each time")
+        return {"servers": ctx.mcp.status()}
+
+    @app.delete("/api/mcp/servers/{name}")
+    async def delete_mcp(name: str):
+        if not await ctx.mcp.remove_server(name):
+            raise HTTPException(404, "No such server.")
+        audit_settings("ui_mcp_remove", name, "removed")
+        return {"servers": ctx.mcp.status()}
+
+    # ---- Agent Skills -----------------------------------------------------------------
+
+    @app.get("/api/agent-skills")
+    async def list_agent_skills():
+        return {"skills": [s.summary() for s in ctx.skills.list()], "folder": str(settings.skills_dir)}
+
+    @app.get("/api/agent-skills/{name}")
+    async def get_agent_skill(name: str):
+        skill = ctx.skills.get(name)
+        if skill is None:
+            raise HTTPException(404, "No such skill.")
+        return {**skill.summary(), "body": skill.body()}
+
+    @app.post("/api/agent-skills")
+    async def save_agent_skill(body: SkillRequest):
+        try:
+            skill = ctx.skills.save(body.name, body.description, body.body, body.original)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        audit_settings("ui_skill_save", skill.name, "saved")
+        return {**skill.summary(), "body": skill.body()}
+
+    @app.post("/api/agent-skills/{name}/toggle")
+    async def toggle_agent_skill(name: str, body: McpToggleRequest):
+        try:
+            ctx.skills.set_enabled(name, body.enabled)
+        except KeyError as exc:
+            raise HTTPException(404, "No such skill.") from exc
+        return {"skills": [s.summary() for s in ctx.skills.list()]}
+
+    @app.delete("/api/agent-skills/{name}")
+    async def delete_agent_skill(name: str):
+        try:
+            ctx.skills.delete(name)
+        except KeyError as exc:
+            raise HTTPException(404, "No such skill.") from exc
+        audit_settings("ui_skill_delete", name, "moved to Trash")
+        return {"skills": [s.summary() for s in ctx.skills.list()]}
+
+    @app.post("/api/agent-skills/import")
+    async def import_agent_skill(file: UploadFile = File(...), replace: bool = Form(False)):
+        data = await file.read(30_000_001)
+        try:
+            names = ctx.skills.import_zip(data, replace)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        audit_settings("ui_skill_import", ", ".join(names), "imported from zip")
+        return {"added": names, "skills": [s.summary() for s in ctx.skills.list()]}
+
+    @app.post("/api/agent-skills/import-folder")
+    async def import_agent_skill_folder(body: SkillImportRequest):
+        try:
+            names = ctx.skills.import_folder(body.path, body.replace)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        audit_settings("ui_skill_import", ", ".join(names), f"imported from {body.path}")
+        return {"added": names, "skills": [s.summary() for s in ctx.skills.list()]}
+
+    # ---- personal preferences ---------------------------------------------------------
+
+    @app.get("/api/preferences")
+    async def get_preferences():
+        return ctx.preferences.load()
+
+    @app.post("/api/preferences")
+    async def save_preferences(body: PreferencesRequest):
+        try:
+            return ctx.preferences.save(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @app.get("/api/agents")
     async def agents():
         registry = load_registry(settings.arch_dir)
@@ -357,7 +654,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/permissions")
     async def list_permissions():
         perms = permissions()
-        integrated = {tool.app for tool in ctx.tools.values()}
+        integrated = {tool.app for tool in ctx.all_tools().values()}
         return [
             {
                 "id": item.id, "name": item.name, "executable": item.executable, "enabled": item.enabled,
@@ -396,6 +693,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 message=body.message, active_path=body.active_path, selected_file=body.selected_file,
                 selection=body.selection, model=body.model, auto_approve=auto_approve,
                 context_files=[f[:500] for f in body.context_files], plan_only=body.plan_only,
+                skills=[name[:64] for name in body.skills],
+                mcp_servers=[name[:48] for name in body.mcp_servers] if body.mcp_servers is not None else None,
             ),
         )
         run.task = asyncio.create_task(run.run())
@@ -919,6 +1218,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audit_ui(session, "ui_delete", label, "success", "moved to Trash")
         return {"path": label, "trashed": True}
 
+    @app.post("/api/files/open")
+    async def open_outside(body: OpenRequest, request: Request):
+        """Opens a generated file outside the app: dashboards (.html) in the default browser, documents, slides and
+        spreadsheets in their default app, or shows the file in Finder."""
+        from core import launcher
+        session = session_for(body.session_id)
+        require_fs("read")
+        guard = guard_for(session)
+        candidates = [body.path]
+        if body.base and not Path(body.path).is_absolute():
+            # The assistant often names outputs relative to the project it works in.
+            candidates.append(f"{body.base.rstrip('/')}/{body.path}")
+        target, denied = None, None
+        for candidate in candidates:
+            try:
+                resolved = guard.resolve(candidate)
+            except PathDenied as exc:
+                denied = denied or exc
+                continue
+            if resolved.exists():
+                target = resolved
+                break
+            target = target or resolved
+        if target is None:
+            audit_ui(session, "ui_open", body.path, "denied", str(denied))
+            raise HTTPException(403, str(denied))
+        if not target.exists():
+            raise HTTPException(404, f"'{body.path}' does not exist (it may have been moved or deleted).")
+        label = guard.display(target)
+        suffix = target.suffix.lower()
+        if body.reveal:
+            launcher.reveal(target)
+            how = "shown in Finder"
+        elif target.is_file() and suffix in launcher.BROWSER_PAGES and not target.is_symlink():
+            url = f"{str(request.base_url).rstrip('/')}/api/dashboards/view?{urlencode({'session_id': session.id, 'path': label})}"
+            launcher.launch(url)
+            how = "opened in the browser"
+        elif target.is_file() and suffix in launcher.OPENABLE:
+            launcher.launch(str(target))
+            how = "opened in its default app"
+        else:
+            raise HTTPException(415, f"{suffix or 'This'} files are opened in the Files window, not outside the app.")
+        audit_ui(session, "ui_open", label, "success", how)
+        return {"path": label, "opened": how}
+
+    @app.post("/api/files-window")
+    async def open_files_window(body: FilesWindowRequest, request: Request):
+        """Opens the Files window. The desktop app opens a native window; the browser version asks the system to open
+        it in a new browser tab. Either way no pop-up is needed, so pop-up blockers cannot stop it."""
+        from core import launcher
+        hook = getattr(app.state, "open_files_window", None)
+        if hook is not None:
+            hook(body.path)
+            return {"opened": "window"}
+        query = f"?{urlencode({'open': body.path})}" if body.path else ""
+        launcher.launch(f"{str(request.base_url).rstrip('/')}/workspace{query}")
+        return {"opened": "browser"}
+
     @app.get("/api/dashboards/view")
     async def view_dashboard(session_id: str = Query(...), path: str = Query(...)):
         """Serves a generated dashboard with a policy that allows styles and images but no scripts."""
@@ -950,6 +1307,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def index():
         return FileResponse(PROJECT_ROOT / "index.html")
 
+    @app.get("/workspace", include_in_schema=False)
+    async def workspace_window():
+        """The Files window: explorer and editor, opened beside the chat."""
+        return FileResponse(PROJECT_ROOT / "workspace.html")
+
     app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "static"), name="static")
     return app
 
@@ -960,5 +1322,5 @@ if __name__ == "__main__":
     import uvicorn
 
     config = app.state.ctx.settings
-    print(f"Local AI Workspace: http://{config.host}:{config.port}")
+    print(f"Agentic Chatbox: http://{config.host}:{config.port}")
     uvicorn.run(app, host=config.host, port=config.port, log_level="warning")
