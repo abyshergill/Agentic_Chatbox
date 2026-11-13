@@ -194,6 +194,7 @@ class GgufRuntime:
         self.model_path: Path | None = None
         self.port = 0
         self.kind = ""
+        self.gpu = True
         self._lock = asyncio.Lock()
 
     @property
@@ -224,17 +225,22 @@ class GgufRuntime:
                 **{k: v for k, v in self.detect().items() if k != "binary"}}
 
     def _command(self, runtime: dict, path: Path, port: int) -> list[str]:
+        from .hardware import gpu_enabled
+
         ctx = str(self.settings.num_ctx)
+        self.gpu = gpu_enabled(self.settings)
         if runtime["kind"] == "llama-server":
             return [runtime["binary"], "-m", str(path), "--host", "127.0.0.1", "--port", str(port), "-c", ctx,
-                    "-ngl", "999", "--jinja", "--alias", path.name]
+                    "-ngl", "999" if self.gpu else "0", "--jinja", "--alias", path.name]
         return [sys.executable, "-m", "llama_cpp.server", "--model", str(path), "--host", "127.0.0.1",
-                "--port", str(port), "--n_ctx", ctx, "--n_gpu_layers", "-1", "--model_alias", path.name]
+                "--port", str(port), "--n_ctx", ctx, "--n_gpu_layers", "-1" if self.gpu else "0", "--model_alias", path.name]
 
     async def client(self, path: Path) -> OpenAICompatibleClient:
         """Starts (or reuses) the server for this file and returns a client for it."""
         async with self._lock:
-            if not (self.running and self.model_path == path):
+            from .hardware import gpu_enabled
+
+            if not (self.running and self.model_path == path and self.gpu == gpu_enabled(self.settings)):
                 self.stop()
                 await self._start(path)
             return OpenAICompatibleClient(f"http://127.0.0.1:{self.port}/v1", label=f"llama.cpp ({path.name})")

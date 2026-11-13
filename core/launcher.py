@@ -12,7 +12,8 @@ from pathlib import Path
 # Files that may be handed to their default app. Nothing here runs code when opened.
 OPENABLE = {
     ".pptx", ".ppt", ".key", ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".xlsm", ".numbers", ".pages", ".odt", ".ods",
-    ".odp", ".rtf", ".csv", ".tsv", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".txt", ".md",
+    ".odp", ".rtf", ".csv", ".tsv", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".txt", ".md", ".mp4", ".mov",
+    ".webm", ".m4v",
 }
 # Opened as a page in the browser, through the app's own viewer (which forbids scripts).
 BROWSER_PAGES = {".html", ".htm"}

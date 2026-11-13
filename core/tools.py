@@ -153,6 +153,14 @@ def _coerce(key: str, value: Any, kind: str) -> Any:
         if isinstance(value, list):
             return [str(item) for item in value]
         if isinstance(value, str):
+            if value.strip().startswith("["):
+                # Small models often send a list as JSON text: '["a.png", "b.png"]'.
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
             return [value]
     raise ToolError(f"argument '{key}' must be of type {kind}")
 

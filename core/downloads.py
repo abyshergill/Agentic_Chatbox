@@ -171,3 +171,55 @@ class Downloads:
             job.status, job.detail = "error", "Ollama is not running. Start it with: ollama serve"
         except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
             job.status, job.detail = "error", str(exc) or type(exc).__name__
+
+    # ---- media support: Python packages and the Stable Diffusion model
+
+    def install_packages(self, name: str, packages: list[str]) -> Job:
+        """pip-installs packages into the app's own Python environment."""
+        if any(j.kind == "install" and j.status == "running" for j in self._jobs.values()):
+            raise ValueError("An installation is already running.")
+        return self._start(Job(secrets.token_hex(6), "install", name, " ".join(packages)), self._install)
+
+    async def _install(self, job: Job) -> None:
+        import sys
+
+        job.detail = "Starting pip…"
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off",
+                *job.source.split(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                stdin=asyncio.subprocess.DEVNULL)
+            tail: list[str] = []
+            assert process.stdout is not None
+            async for raw in process.stdout:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if line:
+                    tail = (tail + [line])[-6:]
+                    job.detail = line[:200]
+            if await process.wait() != 0:
+                raise ValueError("pip failed: " + " | ".join(tail)[-400:])
+            job.status, job.detail = "done", "Installed. Image and video tools are ready."
+        except asyncio.CancelledError:
+            if process and process.returncode is None:
+                process.kill()
+            job.status, job.detail = "cancelled", "Cancelled"
+        except (OSError, ValueError) as exc:
+            job.status, job.detail = "error", str(exc) or type(exc).__name__
+
+    def run_blocking(self, kind: str, name: str, work, done: str) -> Job:
+        """Runs a blocking function in a thread as a job (e.g. downloading the image model)."""
+        if any(j.kind == kind and j.status == "running" for j in self._jobs.values()):
+            raise ValueError(f"{name} is already running.")
+
+        async def runner(job: Job) -> None:
+            job.detail = "Downloading… this can take several minutes"
+            try:
+                await asyncio.to_thread(work)
+                job.status, job.detail = "done", done
+            except asyncio.CancelledError:
+                job.status, job.detail = "cancelled", "Cancelled (the download finishes in the background)"
+            except Exception as exc:  # noqa: BLE001 - shown to the user as the job's error
+                job.status, job.detail = "error", str(exc)[:400] or type(exc).__name__
+
+        return self._start(Job(secrets.token_hex(6), kind, name, ""), runner)

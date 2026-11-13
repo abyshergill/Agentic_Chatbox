@@ -126,6 +126,14 @@ Access: enabled
 Operations: create
 Approval: required
 
+## Images and Video
+
+#media
+Name: Images and Video
+Access: enabled
+Operations: image, video
+Approval: required
+
 ## Self Knowledge
 
 #introspect

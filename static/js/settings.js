@@ -3,11 +3,11 @@ import { $, api, el, emit, on, qs, session, store } from "./util.js";
 import { chooseFolder, chooseGguf, isDesktop } from "./desktop.js";
 import { hydrateIcons, icon } from "./icons.js";
 import { armedButton, iconButton, switchEl, tag, toast } from "./ui.js";
-import { refreshAgentSkills, refreshHealth, refreshPreferences, state } from "./state.js";
+import { modelLabel, refreshAgentSkills, refreshHealth, refreshPreferences, setModel, state } from "./state.js";
 import { openFilesWindow } from "./workspace-link.js";
 
 const TITLES = {
-  general: "General", models: "Models", connectors: "Connectors", skills: "Skills",
+  general: "General", models: "Models", media: "Media & GPU", connectors: "Connectors", skills: "Skills",
   permissions: "Agents & permissions", activity: "Activity",
 };
 const RENDER = {};
@@ -143,7 +143,8 @@ RENDER.models = async () => {
     }),
     ...ollama.models.map((m) => cardRow({
       title: m.name, sub: [m.parameters, m.quantization, m.family, `${m.size_gb} GB`].filter(Boolean).join(" · "),
-      actions: [armedButton("Delete", "Delete?", async () => { if (await act(api("/api/models/ollama/delete", { json: { name: m.name } }), `Deleted ${m.name}`)) render(); })],
+      titleExtra: inUse(m.name),
+      actions: [useButton(m.name), armedButton("Delete", "Delete?", async () => { if (await act(api("/api/models/ollama/delete", { json: { name: m.name } }), `Deleted ${m.name}`)) render(); })],
     })),
     ollama.running ? el("div", { class: "card-extra" }, el("div", { class: "inline-row" }, pullName, pull),
       el("datalist", { id: "pull-suggestions" }, PULL_SUGGESTIONS.map((v) => el("option", { value: v }))),
@@ -156,7 +157,7 @@ RENDER.models = async () => {
       titleExtra: [tag(data.lmstudio.running ? "detected" : "not running", data.lmstudio.running ? "good" : "")],
       sub: data.lmstudio.running ? `${data.lmstudio.url} · models appear in the model menu automatically` : `Start the local server in LM Studio (Developer › Start Server). Looking at ${data.lmstudio.url}.`,
     }),
-    ...lmModels.map((m) => cardRow({ title: m.label, sub: m.id })));
+    ...lmModels.map((m) => cardRow({ title: m.label, sub: m.id, titleExtra: inUse(m.id), actions: [useButton(m.id)] })));
 
   // GGUF
   const ggufPath = input({ placeholder: "/path/to/model.gguf", mono: true });
@@ -170,9 +171,9 @@ RENDER.models = async () => {
       actions: runtime.running ? [el("button", { class: "btn sm", text: "Stop", onclick: async () => { await act(api("/api/models/gguf/stop", { method: "POST" })); render(); } })] : [],
     }),
     ...data.gguf.map((f) => cardRow({
-      title: f.name, titleExtra: f.exists ? [] : [tag("missing", "bad")],
+      title: f.name, titleExtra: f.exists ? inUse(`gguf:${f.name}`) : [tag("missing", "bad")],
       sub: `${f.size_mb ? `${(f.size_mb / 1000).toFixed(1)} GB · ` : ""}${f.path}`, subClass: "mono",
-      actions: f.from_folder ? [tag("models/ folder")] : [armedButton("Remove", "Remove?", async () => {
+      actions: f.from_folder ? [useButton(`gguf:${f.name}`, f.exists), tag("models/ folder")] : [useButton(`gguf:${f.name}`, f.exists), armedButton("Remove", "Remove?", async () => {
         if (await act(api("/api/models/gguf/remove", { json: { path: f.path } }))) render();
       })],
     })),
@@ -203,7 +204,14 @@ RENDER.models = async () => {
   el("div", { class: "form-actions", style: "justify-content:flex-start;margin-top:8px" },
     el("button", { class: "btn sm", text: "Clear finished", onclick: async () => { await api("/api/models/downloads/clear", { method: "POST" }); render(); } }))) : null;
 
+  const current = el("div", { class: "card" }, cardRow({
+    iconName: "spark", iconClass: "accent", title: `Chat model: ${modelLabel(state.model)}`,
+    sub: state.model ? "Used for new messages in every chat. Choose another below, or in the model menu under the message box."
+      : "The best installed local model that supports tools is picked for each message. Choose a fixed one below.",
+    actions: state.model ? [el("button", { class: "btn sm", text: "Use automatic", onclick: () => { setModel(""); render(); } })] : [],
+  }));
   return [
+    current,
     section("Local models", "Run on this computer. Nothing you type leaves it.", ollamaCard, lmCard),
     downloads,
     section("GGUF files", "Run a .gguf model file directly with llama.cpp, without Ollama.", ggufCard),
@@ -212,17 +220,164 @@ RENDER.models = async () => {
   ];
 };
 
+// ---- Media & GPU -------------------------------------------------------------------------------
+
+const IMAGE_MODELS = ["stabilityai/sd-turbo", "stabilityai/sdxl-turbo", "stable-diffusion-v1-5/stable-diffusion-v1-5"];
+const OLLAMA_IMAGE_MODELS = ["x/z-image-turbo", "x/flux2-klein"];
+let mediaPreview = null;
+
+RENDER.media = async () => {
+  const data = await api("/api/media");
+  const cfg = data.config;
+  const { gpu, cpu } = data.hardware;
+  const pkgs = data.packages;
+  const jobs = data.jobs || [];
+  const running = jobs.filter((j) => j.status === "running");
+  if (running.length) poll(1500);
+  const save = async (values, message) => {
+    const saved = await act(api("/api/media/settings", { json: values }), message);
+    if (saved) render();
+    return saved;
+  };
+
+  // GPU
+  const gpuCard = el("div", { class: "card" },
+    cardRow({
+      iconName: "gpu", iconClass: data.gpu_in_use ? "accent" : "",
+      title: gpu.available ? gpu.name : "No GPU found",
+      titleExtra: [gpu.available ? tag(data.gpu_in_use ? "in use" : "off", data.gpu_in_use ? "good" : "") : tag("CPU only")],
+      sub: gpu.available ? `${gpu.detail}${gpu.memory_gb ? ` · ${gpu.memory_gb} GB` : ""}` : "Everything runs on the processor. NVIDIA (CUDA), AMD (ROCm) and Apple Silicon GPUs are used when present.",
+      subClass: "wrap",
+      actions: [switchEl(data.gpu_in_use, (on) => save({ use_gpu: on }, on ? "GPU on: local models and images use the GPU" : "GPU off: local models and images run on the CPU"),
+        { label: "Use the GPU", disabled: !gpu.available })],
+    }),
+    cardRow({ iconName: "cpu", title: cpu.name || "Processor", sub: `${cpu.cores} cores${cpu.memory_gb ? ` · ${cpu.memory_gb} GB memory` : ""} · ${data.hardware.os}` }),
+    el("div", { class: "card-extra" }, el("p", { class: "field-help", text: "The switch applies to Ollama chat models, .gguf files and local image generation; the next message or image picks it up. Turn it off to keep the GPU free for other work (things run slower on the CPU). LM Studio and API models choose their own hardware." })));
+
+  // Image engines
+  const sdReady = data.engines.diffusers;
+  const modelField = input({ value: cfg.diffusers_model, mono: true, list: "sd-models", "aria-label": "Stable Diffusion model" });
+  const sdCard = el("div", { class: "card" },
+    cardRow({
+      iconName: "image", iconClass: data.engine === "diffusers" ? "accent" : "", title: "Stable Diffusion on this computer",
+      titleExtra: [sdReady ? tag("installed", "good") : tag("not installed", "bad"), sdReady ? tag(data.model_cached ? "model downloaded" : "model not downloaded", data.model_cached ? "good" : "") : null,
+        data.engine === "diffusers" ? tag("in use", "accent") : null].filter(Boolean),
+      sub: sdReady ? `Private and free. Runs on the ${data.gpu_in_use ? "GPU" : "CPU"}${data.device ? ` (last run on ${data.device.toUpperCase()})` : ""}.`
+        : "Installs PyTorch and diffusers into the app's Python (about 1 GB), then downloads a model (sd-turbo is about 2.5 GB).",
+      subClass: "wrap",
+      actions: [
+        !sdReady || !pkgs["imageio-ffmpeg"] ? el("button", { class: "btn sm accent", text: "Install", disabled: running.some((j) => j.kind === "install"),
+          onclick: async () => { if (await act(api("/api/media/install", { method: "POST" }), "Installing… this takes a few minutes")) render(); } }) : null,
+        sdReady && !data.model_cached ? el("button", { class: "btn sm", text: "Download model", disabled: running.some((j) => j.kind === "image-model"),
+          onclick: async () => { if (await act(api("/api/media/download-model", { method: "POST" }), "Downloading the model")) render(); } }) : null,
+      ].filter(Boolean),
+    }),
+    el("div", { class: "card-extra" },
+      field("Model", el("div", { class: "inline-row" }, modelField,
+        el("button", { class: "btn", text: "Save", onclick: () => save({ diffusers_model: modelField.value.trim() }, "Saved") })),
+        "A Hugging Face model id or a local folder. Turbo models draw in 1-4 steps: fastest. stable-diffusion-v1-5 is slower but follows prompts in more styles."),
+      el("datalist", { id: "sd-models" }, IMAGE_MODELS.map((v) => el("option", { value: v })))));
+
+  const ollamaField = input({ value: cfg.ollama_image_model, mono: true, list: "ollama-image-models", "aria-label": "Ollama image model" });
+  const ollamaCard = el("div", { class: "card" },
+    cardRow({
+      iconName: "cpu", iconClass: data.engine === "ollama" ? "accent" : "", title: "Ollama image model",
+      titleExtra: [data.engines.ollama ? tag("installed", "good") : tag("not pulled"), tag("experimental"), data.engine === "ollama" ? tag("in use", "accent") : null].filter(Boolean),
+      sub: "Newer Ollama versions can draw images on macOS. Pull the model, then choose Ollama as the engine.", subClass: "wrap",
+      actions: [data.engines.ollama ? null : el("button", { class: "btn sm", text: "Pull", onclick: async () => {
+        if (await act(api("/api/models/ollama/pull", { json: { name: ollamaField.value.trim() } }), "Pulling… see Settings › Models for progress")) render();
+      } })].filter(Boolean),
+    }),
+    el("div", { class: "card-extra" }, field("Model", el("div", { class: "inline-row" }, ollamaField,
+      el("button", { class: "btn", text: "Save", onclick: () => save({ ollama_image_model: ollamaField.value.trim() }, "Saved") }))),
+      el("datalist", { id: "ollama-image-models" }, OLLAMA_IMAGE_MODELS.map((v) => el("option", { value: v })))));
+
+  const providerSelect = el("select", { class: "select", "aria-label": "Image API provider" },
+    el("option", { value: "", text: data.providers.length ? "Choose a provider…" : "Add a provider in Settings › Models first" }),
+    data.providers.map((p) => el("option", { value: p.id, text: `${p.name}${p.remote ? " (remote)" : ""}`, selected: p.id === cfg.api_provider })));
+  const apiModel = input({ value: cfg.api_image_model, mono: true, placeholder: "e.g. gpt-image-1, dall-e-3, flux-schnell" });
+  const apiCard = el("div", { class: "card" },
+    cardRow({
+      iconName: "cloud", iconClass: data.engine === "api" ? "accent" : "", title: "Image API",
+      titleExtra: [data.engines.api ? tag("set up", "good") : tag("not set up"), data.provider_remote ? tag("remote", "remote") : null, data.engine === "api" ? tag("in use", "accent") : null].filter(Boolean),
+      sub: "Any OpenAI-compatible /images/generations endpoint. Remote providers receive your prompts.", subClass: "wrap",
+    }),
+    el("div", { class: "card-extra" }, el("div", { class: "inline-row" }, providerSelect, apiModel,
+      el("button", { class: "btn", text: "Save", onclick: () => save({ api_provider: providerSelect.value, api_image_model: apiModel.value.trim() }, "Saved") }))));
+
+  // Try it
+  const prompt = input({ placeholder: "A lighthouse on a cliff at sunset, oil painting", "aria-label": "Test prompt" });
+  const tryBtn = el("button", { class: "btn accent", text: "Generate", disabled: !data.engine });
+  const result = el("div", { class: "media-try" });
+  if (mediaPreview) result.append(el("img", { src: mediaPreview.image, alt: mediaPreview.prompt }), el("p", { class: "field-help", text: mediaPreview.how }));
+  tryBtn.addEventListener("click", async () => {
+    if (!prompt.value.trim()) { prompt.focus(); return; }
+    tryBtn.disabled = true;
+    tryBtn.textContent = "Generating…";
+    result.replaceChildren(el("p", { class: "field-help", text: data.model_cached || data.engine !== "diffusers" ? "Drawing… the first image also loads the model." : "Downloading the model and drawing… this can take several minutes the first time." }));
+    const made = await act(api("/api/media/test", { json: { prompt: prompt.value.trim() } }));
+    tryBtn.disabled = false;
+    tryBtn.textContent = "Generate";
+    if (made) {
+      mediaPreview = { ...made, prompt: prompt.value.trim() };
+      result.replaceChildren(el("img", { src: made.image, alt: prompt.value.trim() }), el("p", { class: "field-help", text: made.how }));
+    } else result.replaceChildren();
+  });
+  prompt.addEventListener("keydown", (event) => { if (event.key === "Enter") tryBtn.click(); });
+
+  const jobsCard = jobs.length ? el("div", { class: "card" }, ...jobs.map((job) => cardRow({
+    iconName: job.kind === "install" ? "download" : "image", title: job.name,
+    titleExtra: [tag(job.status, job.status === "done" ? "good" : job.status === "error" ? "bad" : "accent")],
+    sub: job.detail, subClass: "wrap",
+  }))) : null;
+
+  const engineLabel = { diffusers: "Stable Diffusion", ollama: "Ollama", api: "Image API" }[data.engine];
+  return [
+    section("GPU", "Detected automatically. Local work uses the GPU when one is present, unless you turn it off.", gpuCard),
+    section("Images", data.engine ? `The assistant draws with ${engineLabel}. Ask in any chat: "make an image of…".` : "Set up one engine below so the assistant can draw images.",
+      field("Engine", seg([["auto", "Automatic"], ["diffusers", "Stable Diffusion"], ["ollama", "Ollama"], ["api", "API"]], cfg.image_engine,
+        (value) => save({ image_engine: value }, "Saved"))),
+      jobsCard, sdCard, ollamaCard, apiCard,
+      field("Try it", el("div", { class: "inline-row" }, prompt, tryBtn)), result),
+    section("Video", null, el("div", { class: "card" }, cardRow({
+      iconName: "video", title: "Videos from scenes or pictures",
+      titleExtra: [data.video.mp4 ? tag("MP4", "good") : tag("GIF only")],
+      sub: data.video.mp4 ? "The assistant draws one picture per scene and joins them with slow zoom, cross-fades and captions."
+        : "Install video support (the Install button above) to save MP4 files; until then videos are animated GIFs.",
+      subClass: "wrap",
+    }))),
+    section("Other files", null, el("p", { class: "lead", text: "Markdown (.md), Python scripts (.py), web pages (.html), Word, Excel and PowerPoint files need no setup: ask for them in a chat. They appear as links that open in the right app or in your browser." })),
+  ];
+};
+
+const inUse = (id) => (state.model === id ? [tag("in use", "good")] : []);
+
+function useButton(id, enabled = true) {
+  if (state.model === id) return el("button", { class: "btn sm", text: "In use", disabled: true });
+  const known = state.catalog.some((m) => m.id === id);
+  return el("button", {
+    class: "btn sm accent", text: "Use", disabled: !enabled,
+    title: known ? `Chat with ${id}` : "Not in the model list yet; it is checked when you send a message",
+    onclick: () => {
+      setModel(id);
+      const remote = state.catalog.find((m) => m.id === id)?.remote;
+      toast(remote ? `Now chatting with ${modelLabel(id)}. It is remote: messages and files it reads go to that provider.` : `Now chatting with ${modelLabel(id)}`, remote ? "warn" : "info", remote ? 6000 : 4200);
+      render();
+    },
+  });
+}
+
 function providerCards(data) {
   if (!data.providers.length) return [];
-  return [el("div", { class: "card" }, ...data.providers.map((p) => cardRow({
+  return [el("div", { class: "card" }, ...data.providers.flatMap((p) => [cardRow({
     iconName: p.remote ? "cloud" : "server", title: p.name,
     titleExtra: [p.remote ? tag("remote", "remote") : tag("local", "good"), p.native_tools ? null : tag("prompted tools")].filter(Boolean),
-    sub: `${p.base_url} · ${p.models.length} model${p.models.length === 1 ? "" : "s"}: ${p.models.join(", ")}`,
+    sub: `${p.base_url} · ${p.models.length} model${p.models.length === 1 ? "" : "s"}`,
     actions: [
       iconButton("edit", "Edit", () => { editingProvider = p; render(); }),
       armedButton("Delete", "Delete?", async () => { if (await act(api(`/api/models/providers/${p.id}`, { method: "DELETE" }))) { emit("models-changed"); render(); } }),
     ],
-  })))];
+  }), ...p.models.map((model) => cardRow({ title: model, titleExtra: inUse(`api:${p.id}:${model}`), actions: [useButton(`api:${p.id}:${model}`)] }))]))];
 }
 
 let editingProvider = null;

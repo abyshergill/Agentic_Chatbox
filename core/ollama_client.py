@@ -270,6 +270,10 @@ class OllamaClient:
             "stream": True,
             "options": {"num_ctx": self.settings.num_ctx},
         }
+        from .hardware import gpu_enabled
+
+        if not gpu_enabled(self.settings):
+            body["options"]["num_gpu"] = 0  # No layers on the GPU: Ollama runs the model on the CPU.
         if tools:
             body["tools"] = tools
         timeout = httpx.Timeout(connect=5, read=600, write=30, pool=5)

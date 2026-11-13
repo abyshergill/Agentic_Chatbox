@@ -134,29 +134,53 @@ function notice(level, text, parent = null) {
 
 // ---- generated files: links that open outside the app -----------------------------------------
 
-const OUTPUT = /\.(html?|pptx?|key|docx?|rtf|odt|xlsx?|xlsm|ods|odp|csv|tsv|pdf|png|jpe?g|gif|webp|svg|md|txt)$/i;
+const OUTPUT = /\.(html?|pptx?|key|docx?|rtf|odt|xlsx?|xlsm|ods|odp|csv|tsv|pdf|png|jpe?g|gif|webp|svg|mp4|webm|mov|md|txt|py|ipynb|js|mjs|ts|css|json|ya?ml|sql|sh)$/i;
+// [pattern, icon, kind, action, where]: "outside" opens in the default app or browser, "files" in the Files window.
 const FILE_KINDS = [
-  [/\.html?$/i, "globe", "Dashboard", "Open in browser"],
-  [/\.(pptx?|key|odp)$/i, "file", "Presentation", "Open"],
-  [/\.(docx?|rtf|odt)$/i, "file", "Document", "Open"],
-  [/\.(xlsx?|xlsm|ods)$/i, "data", "Spreadsheet", "Open"],
-  [/\.(csv|tsv)$/i, "data", "Data file", "Open"],
-  [/\.pdf$/i, "file", "PDF", "Open"],
-  [/\.(png|jpe?g|gif|webp|svg)$/i, "eye", "Image", "Open"],
+  [/\.html?$/i, "globe", "Web page", "Open in browser", "outside"],
+  [/\.(pptx?|key|odp)$/i, "file", "Presentation", "Open", "outside"],
+  [/\.(docx?|rtf|odt)$/i, "file", "Document", "Open", "outside"],
+  [/\.(xlsx?|xlsm|ods)$/i, "data", "Spreadsheet", "Open", "outside"],
+  [/\.(csv|tsv)$/i, "data", "Data file", "Open", "outside"],
+  [/\.pdf$/i, "file", "PDF", "Open", "outside"],
+  [/\.(png|jpe?g|gif|webp|svg)$/i, "image", "Image", "Open", "outside"],
+  [/\.(mp4|webm|mov)$/i, "video", "Video", "Play", "outside"],
+  [/\.md$/i, "file", "Markdown", "Open", "files"],
+  [/\.(py|ipynb)$/i, "terminal", "Python script", "Open", "files"],
+  [/\.(js|mjs|ts|css|json|ya?ml|sql|sh|txt)$/i, "file", "Text file", "Open", "files"],
 ];
-const kindOf = (path) => FILE_KINDS.find(([re]) => re.test(path)) || [null, "file", "File", "Open"];
+const kindOf = (path) => FILE_KINDS.find(([re]) => re.test(path)) || [null, "file", "File", "Open", "files"];
+const openPath = (path) => (kindOf(path)[4] === "files" ? openFilesWindow(path) : openOutside(path));
+const mediaUrl = (path) => `/api/files/media?${qs({ session_id: session.id, path, base: getActiveProject() || "" })}`;
+
+function preview(path) {
+  if (/\.(png|jpe?g|gif|webp)$/i.test(path)) {
+    const image = el("img", { class: "out-image", src: mediaUrl(path), alt: path.split("/").pop(), loading: "lazy", title: "Open in your image viewer" });
+    image.addEventListener("click", () => openOutside(path));
+    image.addEventListener("error", () => image.remove());
+    return image;
+  }
+  if (/\.(mp4|webm)$/i.test(path)) {
+    const video = el("video", { class: "out-video", src: mediaUrl(path), controls: true, preload: "metadata", playsinline: true });
+    video.addEventListener("error", () => video.remove());
+    return video;
+  }
+  return null;
+}
 
 function fileCard(paths) {
   const rows = paths.map((path) => {
     const [, iconName, kind, action] = kindOf(path);
     const name = path.split("/").pop();
-    return el("div", { class: "out-row" },
-      el("span", { class: "out-icon" }, icon(iconName, "i i-sm")),
-      el("button", { class: "out-main", title: `${action}: ${path}`, onclick: () => openOutside(path) },
-        el("span", { class: "out-name", text: name }),
-        el("span", { class: "out-sub", text: `${kind} · ${path}` })),
-      el("button", { class: "out-open", text: action, onclick: () => openOutside(path) }),
-      el("button", { class: "ghost sm", title: "Show in Finder", "aria-label": `Show ${name} in Finder`, onclick: () => openOutside(path, { reveal: true }) }, icon("folder", "i i-sm")));
+    return el("div", { class: "out-item" },
+      preview(path),
+      el("div", { class: "out-row" },
+        el("span", { class: "out-icon" }, icon(iconName, "i i-sm")),
+        el("button", { class: "out-main", title: `${action}: ${path}`, onclick: () => openPath(path) },
+          el("span", { class: "out-name", text: name }),
+          el("span", { class: "out-sub", text: `${kind} · ${path}` })),
+        el("button", { class: "out-open", text: action, onclick: () => openPath(path) }),
+        el("button", { class: "ghost sm", title: "Show in Finder", "aria-label": `Show ${name} in Finder`, onclick: () => openOutside(path, { reveal: true }) }, icon("folder", "i i-sm"))));
   });
   return el("div", { class: "outputs" }, el("div", { class: "out-title", text: paths.length === 1 ? "Created a file" : `Created ${paths.length} files` }), ...rows);
 }
@@ -181,7 +205,7 @@ function linkifyFiles(root) {
   }
 }
 
-const EXT = "html?|pptx?|key|docx?|rtf|odt|xlsx?|xlsm|ods|odp|csv|tsv|pdf|png|jpe?g|gif|webp|svg";
+const EXT = "html?|pptx?|key|docx?|rtf|odt|xlsx?|xlsm|ods|odp|csv|tsv|pdf|png|jpe?g|gif|webp|svg|mp4|webm|mov|md|py|ipynb";
 const PLAIN_PATH = new RegExp(`(?:^|[\\s(])(?:/|[\\w.-]+/)[\\w./-]*\\.(?:${EXT})(?=$|[\\s),.;:!?])`, "i");
 const PLAIN_PATH_SPLIT = new RegExp(`((?:/|[\\w.-]+/)[\\w./-]*\\.(?:${EXT}))(?=$|[\\s),.;:!?])`, "gi");
 
@@ -195,7 +219,7 @@ function onThreadClick(event) {
   const fileLink = event.target.closest("[data-open-path]");
   if (fileLink) {
     event.preventDefault();
-    openOutside(fileLink.dataset.openPath);
+    openPath(fileLink.dataset.openPath);
     return;
   }
   const button = event.target.closest("[data-copy]");

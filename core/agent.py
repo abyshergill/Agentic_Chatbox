@@ -83,7 +83,7 @@ RUNS_PROGRAMS = {"terminal", "python", "git"}
 
 # Applications every agent gets on top of its own: connectors (MCP servers) and Agent Skills. Each is still governed by
 # arch/permission.md, so disabling #mcp or #skills there turns it off everywhere.
-SHARED_APPS = {"mcp", "skills"}
+SHARED_APPS = {"mcp", "skills", "media"}
 
 
 # Operations that only look. An agent marked 'Read Only: yes' is offered tools for these and nothing else.

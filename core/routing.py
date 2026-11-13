@@ -12,8 +12,14 @@ WORD = re.compile(r"[a-z][a-z0-9+#]+")
 STOPWORDS = {
     "the", "and", "for", "with", "this", "that", "from", "into", "code", "writes", "write", "handles", "use",
     "using", "make", "general", "tasks", "task", "files", "file", "project", "projects", "user", "please", "can",
-    "you", "your", "changes", "server",
+    "you", "your", "changes", "server", "create", "creates", "generate", "new",
+    # Short function words, which otherwise add up to a match ("an image of a cabin in the woods").
+    "an", "in", "of", "to", "on", "at", "by", "or", "as", "is", "it", "be", "me", "my", "we", "us", "do", "so", "if",
+    "up", "no", "are", "was", "its", "all", "any", "how", "what", "who", "why", "not", "but", "out", "about", "some",
+    "want", "need", "like", "give", "show", "get", "let", "would", "could", "should", "page", "pages",
 }
+# Agents that only start when the user names their skill (system.md: "Only the user can start it").
+EXPLICIT_ONLY_AGENTS = {"agent_manager"}
 MIN_ROUTE_SCORE = 3
 
 
@@ -47,7 +53,7 @@ def route_by_intent(message: str, registry: Registry) -> tuple[Skill | None, lis
     best_score = 0
     best_terms: list[str] = []
     for skill in registry.valid_skills():
-        if skill.command == registry.system.default_skill:
+        if skill.command == registry.system.default_skill or skill.agent_id in EXPLICIT_ONLY_AGENTS:
             continue
         title = wanted & _words(skill.title)
         description = (wanted & _words(skill.description)) - title

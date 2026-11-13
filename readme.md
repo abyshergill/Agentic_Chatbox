@@ -290,8 +290,9 @@ Agent Skills are different from the **agents** in `arch/` (see [Configuration](#
 
 ## Models
 
-Pick a model from the menu in the message box, grouped by source. Manage sources in **Settings › Models**.
-**Automatic** uses a model on your computer and never picks a remote one.
+Pick a model from the menu in the message box, grouped by source, or click **Use** next to any model in
+**Settings › Models** (the one in use is marked *in use*). **Automatic** uses a model on your computer and never picks a
+remote one. Your choice is remembered between launches.
 
 | Source | How to add it | Data leaves your computer? |
 | --- | --- | --- |
@@ -321,6 +322,31 @@ with small models. The server log is in `logs/gguf-server.log`. The context size
 Choosing one shows a warning. Keys are saved in `data/models.json` (readable only by you, mode 600, git-ignored) and are
 never sent back to the page or offered to the assistant. Remote addresses must use `https://`. If a model answers with
 raw JSON instead of acting, edit the provider and turn off **native tool calling**.
+
+## Images, video and the GPU
+
+Ask in any chat for a picture ("make an image of a lighthouse at dusk, oil painting") or a video ("a 4-scene video of a
+seed growing into a tree, with captions"). The assistant uses `generate_image` and `create_video` (the `#media`
+application); results appear in the chat as previews with links that open them in your image viewer or video player.
+Set up an engine in **Settings › Media & GPU**:
+
+| Engine | Setup | Data leaves your computer? |
+| --- | --- | --- |
+| Stable Diffusion (default `stabilityai/sd-turbo`, or any diffusers model id / folder) | **Install** (PyTorch and diffusers, about 1 GB), then **Download model** (about 2.5 GB). Or `pip install -r requirements-media.txt` | No |
+| Ollama image model (`x/z-image-turbo`, `x/flux2-klein`; experimental in Ollama) | **Pull**, then choose *Ollama* as the engine | No |
+| Image API (any OpenAI-compatible `/images/generations`, e.g. `gpt-image-1`) | Add the provider in Settings › Models, then choose it and the image model | Yes, if the provider is remote |
+
+Videos are built from scene images (generated one per scene) or from existing pictures, with slow zoom, cross-fades and
+optional captions. They are saved as MP4 when `imageio-ffmpeg` is installed (part of **Install**), otherwise as animated
+GIFs. **Try it** in the same tab draws a test image without saving it.
+
+**GPU.** The app detects an NVIDIA (CUDA), AMD (ROCm) or Apple Silicon (Metal) GPU and uses it for Ollama models,
+`.gguf` files and image generation. Turn **Use the GPU** off to run all of these on the CPU, for example to keep the GPU
+free for a game or another job; the next message or image picks the change up. LM Studio and API providers choose
+their own hardware. Settings are kept in `data/media.json`.
+
+Markdown, Python scripts, HTML pages and other text files need no setup: the assistant writes them with `create_file`,
+and they appear as links (HTML opens in your browser; Markdown and code open in the Files window).
 
 ## Configuration
 
@@ -466,6 +492,7 @@ Add a module to `core/adapters/` that defines `adapter = Adapter(app_id=..., too
 | `#data` | `profile_data`, `query_data`, `analyze_data`, `create_dashboard`, `create_presentation`, `transform_data`, `merge_data`, `create_excel` |
 | `#introspect` | `describe_capabilities`: reports what the assistant may do and why (read-only) |
 | `#documents` | `create_document`: writes Word `.docx` files |
+| `#media` | `generate_image`, `create_video`: pictures and short videos (see [Images, video and the GPU](#images-video-and-the-gpu)) |
 | `#python` | `execute_python` |
 | `#git` | `git_status`, `git_diff`, `git_add`, `git_commit` |
 | `#vscode` | `open_project`, `open_file` (offered when you use `#vscode` or mention VS Code) |
@@ -551,7 +578,9 @@ core/
 ├── agent.py         Agent loop; the only path to running a tool
 ├── mcp_hub.py       Connectors: MCP server connections and their tools
 ├── agent_skills.py  Agent Skills: SKILL.md folders, import, and the skills catalog
-├── downloads.py     .gguf downloads and Ollama pulls
+├── downloads.py     .gguf downloads, Ollama pulls, media installs
+├── hardware.py      GPU detection and the Use-the-GPU switch
+├── media.py         Image engines (Stable Diffusion, Ollama, API) and video assembly
 ├── preferences.py   Your name and custom instructions
 ├── arch_loader.py   Parses agents, skills, and commands
 ├── permissions.py   Parses permission.md and makes decisions

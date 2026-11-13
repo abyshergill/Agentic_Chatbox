@@ -23,7 +23,7 @@ from core.config import PROJECT_ROOT, Settings
 from core.fs_guard import FsGuard, PathDenied, atomic_write, is_secret_name, read_text_limited
 from core import dataviz
 from core.documents import DOCUMENT_TYPES, extract_text
-from core.models import PRESETS, mask
+from core.models import PRESETS, ModelStore, mask
 from core.ollama_client import OllamaError
 from core.openai_client import OpenAICompatibleClient
 from core.permissions import PermissionManager
@@ -37,7 +37,7 @@ from core.uploads import (
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'; "
+    "img-src 'self' data:; media-src 'self'; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'; "
     "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 )
 
@@ -156,6 +156,23 @@ class OpenRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1000)
     reveal: bool = False  # Show it in Finder instead of opening it.
     base: str | None = Field(default=None, max_length=1000)  # The active project, for paths relative to it.
+
+
+class MediaSettingsRequest(BaseModel):
+    use_gpu: bool | None = None
+    image_engine: str | None = Field(default=None, max_length=20)
+    diffusers_model: str | None = Field(default=None, max_length=300)
+    ollama_image_model: str | None = Field(default=None, max_length=200)
+    api_provider: str | None = Field(default=None, max_length=40)
+    api_image_model: str | None = Field(default=None, max_length=200)
+
+
+class MediaTestRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+
+
+MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+               ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm"}
 
 
 class FilesWindowRequest(BaseModel):
@@ -456,6 +473,91 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ctx.downloads.clear_finished()
         return {"jobs": ctx.downloads.jobs()}
 
+    # ---- media and GPU: Settings > Media & GPU ------------------------------------------
+
+    MEDIA_PACKAGES = ["torch", "diffusers>=0.30", "transformers", "accelerate", "safetensors", "imageio", "imageio-ffmpeg"]
+
+    @app.get("/api/media")
+    async def media_status():
+        from core import hardware, media
+        engine = media.engine_for(settings)
+        data = await engine.status()
+        providers = [{"id": p["id"], "name": p["name"], "remote": not is_local(p["base_url"])}
+                     for p in ModelStore(settings.data_dir / "models.json").load()["providers"]]
+        return {**data, "hardware": hardware.detect(), "gpu_in_use": hardware.gpu_enabled(settings),
+                "packages": hardware.packages(), "providers": providers,
+                "jobs": [j for j in ctx.downloads.jobs() if j["kind"] in {"install", "image-model"}]}
+
+    @app.post("/api/media/settings")
+    async def media_settings(body: MediaSettingsRequest):
+        from core import hardware, media
+        before = hardware.config(settings).load()
+        try:
+            saved = hardware.config(settings).save(body.model_dump(exclude_none=True))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if saved["use_gpu"] != before["use_gpu"] or saved["diffusers_model"] != before["diffusers_model"]:
+            media.engine_for(settings).unload()
+        ctx.audit.record(session_id="-", agent="user", skill="-", model="-", operation="ui_media_settings",
+                         target="media", permission="allowed", approval="user_action", status="success",
+                         result=f"use_gpu={saved['use_gpu']} engine={saved['image_engine']}")
+        return saved
+
+    @app.post("/api/media/install")
+    async def media_install():
+        try:
+            job = ctx.downloads.install_packages("Image and video support", MEDIA_PACKAGES)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        ctx.audit.record(session_id="-", agent="user", skill="-", model="-", operation="ui_media_install",
+                         target=" ".join(MEDIA_PACKAGES), permission="allowed", approval="user_action",
+                         status="success", result="started")
+        return job.public()
+
+    @app.post("/api/media/download-model")
+    async def media_download_model():
+        from core import hardware, media
+        packages = hardware.packages()
+        if not (packages["torch"] and packages["diffusers"]):
+            raise HTTPException(400, "Install image support first.")
+        model = hardware.config(settings).load()["diffusers_model"]
+        try:
+            job = ctx.downloads.run_blocking("image-model", model, media.engine_for(settings).download_model,
+                                             f"{model} is ready")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return job.public()
+
+    @app.post("/api/media/test")
+    async def media_test(body: MediaTestRequest):
+        """Settings > Media & GPU > Try it: draws one image and returns it, without saving a file."""
+        import base64
+        from core.media import ImageRequest, MediaError, engine_for
+        try:
+            data, how = await engine_for(settings).generate(ImageRequest(prompt=body.prompt, width=512, height=512))
+        except MediaError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"image": "data:image/png;base64," + base64.b64encode(data).decode("ascii"), "how": how}
+
+    @app.get("/api/files/media")
+    async def file_media(session_id: str = Query(...), path: str = Query(..., max_length=1000), base: str | None = Query(None)):
+        """Images and videos the assistant made, for previews in the chat."""
+        session = session_for(session_id)
+        require_fs("read")
+        guard = guard_for(session)
+        candidates = [path] + ([f"{base.rstrip('/')}/{path}"] if base and not Path(path).is_absolute() else [])
+        for candidate in candidates:
+            try:
+                resolved = guard.resolve(candidate)
+            except PathDenied:
+                continue
+            media_type = MEDIA_TYPES.get(resolved.suffix.lower())
+            if media_type and resolved.is_file() and not resolved.is_symlink():
+                return FileResponse(resolved, media_type=media_type,
+                                    headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'",
+                                             "X-Content-Type-Options": "nosniff"})
+        raise HTTPException(404, "No such image or video.")
+
     # ---- connectors: MCP servers ----------------------------------------------------
     # Only the user's interface reaches these. Secrets in env and headers are never sent back to the page.
 
@@ -727,6 +829,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if run is None or run.task is None or run.task.done():
             return {"stopped": False}
         run.task.cancel()
+        from core.media import engine_for
+        engine_for(settings).cancel.set()  # A local image being drawn stops at its next step.
         return {"stopped": True}
 
     @app.get("/api/session")

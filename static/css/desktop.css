@@ -559,3 +559,11 @@ dialog.dlg.wide .dlg-group-title { font-size: 12px; margin-bottom: 8px; }
 dialog.dlg.wide .dlg-files .chip { height: 32px; font-size: 13px; }
 dialog.dlg.wide .dlg-new { margin-top: 20px; padding-top: 20px; }
 @media (max-width: 640px) { dialog.dlg.wide .dlg-options { grid-template-columns: 1fr; } }
+
+/* Settings > Media & GPU */
+.media-try img { display: block; max-width: 320px; width: 100%; border-radius: 10px; border: 1px solid var(--line); margin-top: 10px; }
+
+/* Images and videos the assistant made, previewed above their file row */
+.out-item + .out-item { border-top: 1px solid var(--line); }
+.out-image, .out-video { display: block; margin: 12px 14px 2px; max-width: min(460px, calc(100% - 28px)); max-height: 420px; border-radius: 10px; border: 1px solid var(--line); background: var(--active); }
+.out-image { cursor: zoom-in; object-fit: contain; }

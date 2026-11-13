@@ -1,0 +1,11 @@
+# Optional: image and video generation (Settings > Media & GPU > Install does the same).
+# Uses the GPU automatically: CUDA on NVIDIA, Metal (MPS) on Apple Silicon, ROCm builds of PyTorch on AMD.
+# For NVIDIA on Windows/Linux, install the CUDA build of PyTorch first: https://pytorch.org/get-started/locally/
+torch>=2.2
+diffusers>=0.30
+transformers>=4.40
+accelerate>=0.30
+safetensors>=0.4
+# MP4 output for videos (bundles its own ffmpeg). Without it, videos are saved as animated GIFs.
+imageio>=2.34
+imageio-ffmpeg>=0.5
